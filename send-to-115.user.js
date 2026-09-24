@@ -1,20 +1,20 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.1.0
-// @description  Right-click selected cloud links and send them to 115 offline download.
+// @version      0.2.0
+// @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
 // @match        *://*/*
 // @run-at       document-end
 // @noframes
 // @connect      115.com
+// @connect      my.115.com
 // @connect      webapi.115.com
 // @grant        GM_addStyle
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
-// @grant        GM_notification
 // @grant        GM_registerMenuCommand
 // ==/UserScript==
 
@@ -29,7 +29,8 @@
 
   const API = {
     sign: () => `https://115.com/?ct=offline&ac=space&_=${Date.now()}`,
-    downpath: 'https://webapi.115.com/offine/downpath',
+    downpath: () => `https://webapi.115.com/offine/downpath?limit=1150&_=${Date.now()}`,
+    userInfo: () => `https://my.115.com/?ct=ajax&ac=nav&_=${Date.now()}`,
     addMany: 'https://115.com/web/lixian/?ct=lixian&ac=add_task_urls',
   };
 
@@ -39,42 +40,33 @@
   };
 
   GM_addStyle(`
-    .send-to-115-menu {
+    .send-to-115-toast {
       position: fixed;
+      right: 16px;
+      bottom: 16px;
       z-index: 2147483647;
-      min-width: 148px;
-      padding: 6px;
+      max-width: min(360px, calc(100vw - 32px));
+      padding: 10px 12px;
       border: 1px solid rgba(0, 0, 0, .14);
       border-radius: 8px;
-      background: #fff;
+      background: #111827;
       box-shadow: 0 10px 28px rgba(0, 0, 0, .18);
-      color: #111827;
-      font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #fff;
+      font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
-    .send-to-115-menu button {
+    .send-to-115-toast strong {
       display: block;
-      width: 100%;
-      border: 0;
-      border-radius: 6px;
-      background: transparent;
-      color: inherit;
-      cursor: pointer;
-      font: inherit;
-      padding: 7px 9px;
-      text-align: left;
-      white-space: nowrap;
+      margin-bottom: 2px;
+      font-size: 13px;
     }
-    .send-to-115-menu button:hover {
-      background: #f3f4f6;
-    }
-    .send-to-115-menu small {
+    .send-to-115-toast span {
       display: block;
-      padding: 3px 9px 6px;
-      color: #6b7280;
+      color: #d1d5db;
+      overflow-wrap: anywhere;
     }
   `);
 
-  GM_registerMenuCommand('发送最近右键内容到 115', () => {
+  GM_registerMenuCommand('发送到 115（选中/最近右键内容）', () => {
     const urls = lastContext.urls.length ? lastContext.urls : collectCurrentUrls();
     sendUrls(urls);
   });
@@ -93,11 +85,6 @@
       urls,
       text: getSelectionText() || getLinkHref(event.target) || '',
     };
-
-    if (!urls.length) return;
-
-    event.preventDefault();
-    showMenu(event.clientX, event.clientY, urls);
   }, true);
 
   document.addEventListener('keydown', (event) => {
@@ -105,10 +92,6 @@
     event.preventDefault();
     sendUrls(collectCurrentUrls());
   });
-
-  document.addEventListener('click', hideMenu, true);
-  window.addEventListener('blur', hideMenu);
-  window.addEventListener('scroll', hideMenu, true);
 
   function collectEventUrls(event) {
     const selectedText = getSelectionText();
@@ -177,34 +160,6 @@
     return link ? link.textContent.trim() : '';
   }
 
-  function showMenu(x, y, urls) {
-    hideMenu();
-
-    const menu = document.createElement('div');
-    menu.className = 'send-to-115-menu';
-    menu.innerHTML = `
-      <button type="button" data-action="send">发送到 115</button>
-      <small>${urls.length} 条链接</small>
-    `;
-
-    menu.querySelector('[data-action="send"]').addEventListener('click', (event) => {
-      event.stopPropagation();
-      hideMenu();
-      sendUrls(urls);
-    });
-
-    document.documentElement.appendChild(menu);
-
-    const rect = menu.getBoundingClientRect();
-    menu.style.left = `${Math.min(x, window.innerWidth - rect.width - 8)}px`;
-    menu.style.top = `${Math.min(y, window.innerHeight - rect.height - 8)}px`;
-  }
-
-  function hideMenu() {
-    const oldMenu = document.querySelector('.send-to-115-menu');
-    if (oldMenu) oldMenu.remove();
-  }
-
   async function sendUrls(urls) {
     const uniqueUrls = Array.from(new Set(urls || []));
     if (!uniqueUrls.length) {
@@ -235,15 +190,13 @@
   }
 
   async function addTasks(urls) {
-    const [token, userId] = await Promise.all([
-      getSignToken(),
-      getUserId(),
-    ]);
+    const token = await getSignToken();
+    const userId = token.userId || await getOptionalUserId();
 
     const params = new URLSearchParams();
     params.set('savepath', '');
     params.set('wp_path_id', GM_getValue(CONFIG.wpPathIdKey, ''));
-    params.set('uid', userId);
+    if (userId) params.set('uid', userId);
     params.set('sign', token.sign);
     params.set('time', token.time);
 
@@ -266,6 +219,15 @@
     return parseJson(response.responseText);
   }
 
+  async function getOptionalUserId() {
+    try {
+      return await getUserId();
+    } catch (error) {
+      console.warn('[Send to 115] 未能获取 115 用户 ID，将不带 uid 继续提交', error);
+      return '';
+    }
+  }
+
   async function getSignToken() {
     const response = await request({
       method: 'GET',
@@ -284,24 +246,88 @@
     return {
       sign: json.sign,
       time: json.time,
+      userId: findUserId(json),
     };
   }
 
   async function getUserId() {
+    const readers = [
+      readUserIdFromUserInfo,
+      readUserIdFromDownpath,
+    ];
+
+    const errors = [];
+    for (const reader of readers) {
+      try {
+        const userId = await reader();
+        if (userId) return userId;
+      } catch (error) {
+        errors.push(error.message || String(error));
+      }
+    }
+
+    throw new Error(`获取 115 用户 ID 失败${errors.length ? `：${errors.join('；')}` : ''}`);
+  }
+
+  async function readUserIdFromUserInfo() {
     const response = await request({
       method: 'GET',
-      url: API.downpath,
+      url: API.userInfo(),
+      headers: {
+        'Accept': 'application/json, text/javascript, */*; q=0.01',
+        'Referer': 'https://115.com/',
+      },
+    });
+
+    const json = parseLooseJson(response.responseText);
+    const userId = findUserId(json);
+
+    if (!userId && json.state === false) {
+      throw new Error(json.error_msg || json.msg || '115 登录态不可用');
+    }
+
+    return userId;
+  }
+
+  async function readUserIdFromDownpath() {
+    const response = await request({
+      method: 'GET',
+      url: API.downpath(),
+      headers: {
+        'Accept': 'application/json, text/javascript, */*; q=0.01',
+        'Referer': 'https://115.com/',
+      },
     });
 
     const json = parseJson(response.responseText);
-    const data = Array.isArray(json.data) ? json.data : [];
-    const item = data.find((entry) => entry && entry.user_id);
+    const userId = findUserId(json);
 
-    if (!item || !item.user_id) {
-      throw new Error(json.error_msg || json.msg || '获取 115 用户 ID 失败');
+    if (!userId && json.state === false) {
+      throw new Error(json.error_msg || json.msg || json.error || '获取云下载目录失败');
     }
 
-    return String(item.user_id);
+    return userId;
+  }
+
+  function findUserId(value) {
+    if (!value || typeof value !== 'object') return '';
+
+    const keys = ['user_id', 'userid', 'uid'];
+    for (const key of keys) {
+      const candidate = value[key];
+      if (candidate !== undefined && candidate !== null && String(candidate).trim()) {
+        return String(candidate).trim();
+      }
+    }
+
+    for (const nested of Object.values(value)) {
+      if (nested && typeof nested === 'object') {
+        const candidate = findUserId(nested);
+        if (candidate) return candidate;
+      }
+    }
+
+    return '';
   }
 
   function request(options) {
@@ -330,6 +356,19 @@
     }
   }
 
+  function parseLooseJson(text) {
+    const trimmed = String(text || '').trim();
+    if (trimmed.startsWith('{')) return parseJson(trimmed);
+
+    const start = trimmed.indexOf('{');
+    const end = trimmed.lastIndexOf('}');
+    if (start !== -1 && end > start) {
+      return parseJson(trimmed.slice(start, end + 1));
+    }
+
+    return parseJson(trimmed);
+  }
+
   function chunk(items, size) {
     const chunks = [];
     for (let index = 0; index < items.length; index += size) {
@@ -339,14 +378,30 @@
   }
 
   function notify(title, text) {
-    if (typeof GM_notification === 'function') {
-      GM_notification({
-        title,
-        text: text || '',
-        timeout: 4000,
-      });
-      return;
-    }
+    showToast(title, text || '');
     console.log(`[Send to 115] ${title}`, text || '');
+  }
+
+  function showToast(title, text) {
+    const oldToast = document.querySelector('.send-to-115-toast');
+    if (oldToast) oldToast.remove();
+
+    const toast = document.createElement('div');
+    toast.className = 'send-to-115-toast';
+
+    const titleNode = document.createElement('strong');
+    titleNode.textContent = title;
+    toast.appendChild(titleNode);
+
+    if (text) {
+      const textNode = document.createElement('span');
+      textNode.textContent = text;
+      toast.appendChild(textNode);
+    }
+
+    document.documentElement.appendChild(toast);
+    window.setTimeout(() => {
+      if (toast.parentNode) toast.remove();
+    }, 4000);
   }
 })();
