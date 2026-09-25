@@ -47,7 +47,8 @@ Use the floating panel or the Tampermonkey menu command `设置 115 + aria2 配�
   "pollIntervalMs": 30000,
   "pollTimeoutMs": 7200000,
   "stableRounds": 2,
-  "includeSubfolders": true
+  "includeSubfolders": true,
+  "waitOfflineTaskStatus": true
 }
 ```
 
@@ -69,7 +70,8 @@ Example for your aria2 RPC endpoint:
   "pollIntervalMs": 30000,
   "pollTimeoutMs": 7200000,
   "stableRounds": 2,
-  "includeSubfolders": true
+  "includeSubfolders": true,
+  "waitOfflineTaskStatus": true
 }
 ```
 
@@ -88,6 +90,13 @@ Non-random mode:
 - Set `wpPathId` to the folder that should receive 115 offline files.
 - The script snapshots that folder before submitting, then pushes newly appeared files after the directory becomes stable.
 
+Completion detection:
+
+- With `waitOfflineTaskStatus: true`, the script first polls 115 offline tasks via `ct=lixian&ac=task_lists`.
+- It matches tasks by returned task id/hash/url first, then by the random folder id/name.
+- After all matched tasks look complete, it scans the target folder and pushes the newly appeared files to aria2.
+- If task matching is unavailable for three polls, it falls back to directory stability polling.
+
 ## Notes
 
 This script calls 115 web endpoints with your existing login cookies:
@@ -98,6 +107,7 @@ This script calls 115 web endpoints with your existing login cookies:
 - `https://webapi.115.com/files`
 - `https://webapi.115.com/files/download`
 - `https://115.com/web/lixian/?ct=lixian&ac=add_task_urls`
+- `https://115.com/web/lixian/?ct=lixian&ac=task_lists`
 
 These are web-side endpoints and may change if 115 changes its site.
 

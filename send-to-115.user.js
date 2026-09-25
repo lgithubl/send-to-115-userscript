@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.4.0
+// @version      0.5.0
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -50,6 +50,7 @@
     pollTimeoutMs: 7200000,
     stableRounds: 2,
     includeSubfolders: true,
+    waitOfflineTaskStatus: true,
   };
 
   const API = {
@@ -76,6 +77,7 @@
     },
     download: (pickcode) => `https://webapi.115.com/files/download?pickcode=${encodeURIComponent(pickcode)}&_=${Date.now()}`,
     addMany: 'https://115.com/web/lixian/?ct=lixian&ac=add_task_urls',
+    taskList: 'https://115.com/web/lixian/?ct=lixian&ac=task_lists',
   };
 
   let lastContext = {
@@ -385,6 +387,7 @@
       pollTimeoutMs: clampNumber(settings.pollTimeoutMs, 60000, 86400000, DEFAULT_SETTINGS.pollTimeoutMs),
       stableRounds: clampNumber(settings.stableRounds, 1, 20, DEFAULT_SETTINGS.stableRounds),
       includeSubfolders: Boolean(settings.includeSubfolders),
+      waitOfflineTaskStatus: settings.waitOfflineTaskStatus !== false,
     };
   }
 
@@ -569,6 +572,7 @@
       pollIntervalMs: 30000,
       pollTimeoutMs: 7200000,
       stableRounds: 2,
+      waitOfflineTaskStatus: true,
     });
   }
 
@@ -703,14 +707,19 @@
       const results = [];
 
       for (const urlsChunk of chunks) {
-        results.push(await addTasks(urlsChunk, job.wpPathId));
+        results.push({
+          urls: urlsChunk,
+          response: await addTasks(urlsChunk, job.wpPathId),
+        });
       }
 
-      const failed = results.filter((item) => !item.state);
+      const failed = results.map((item) => item.response).filter((item) => !item.state);
       if (failed.length) {
         const message = failed.map((item) => item.error_msg || item.msg || '未知错误').join('; ');
         throw new Error(message);
       }
+
+      const matcher = buildOfflineTaskMatcher(results, uniqueUrls, job);
 
       if (!settings.pushToAria2) {
         upsertHistoryItem({
@@ -725,7 +734,12 @@
         id: historyId,
         status: 'waiting',
       });
-      const files = await waitForCompletedFiles(job, settings);
+      const waitResult = await waitForOfflineOrDirectory(job, settings, matcher, historyId);
+      upsertHistoryItem({
+        id: historyId,
+        status: waitResult.usedOfflineStatus ? 'offline done' : 'directory stable',
+      });
+      const files = await getFilesReadyForPush(job, settings, historyId, waitResult);
       const pushed = await pushFilesToAria2(files, settings);
       upsertHistoryItem({
         id: historyId,
@@ -751,6 +765,7 @@
         wpPathId: targetCid,
         watchCid: targetCid,
         folderName: '',
+        isRandomFolder: false,
         beforeFileIds: targetCid ? await snapshotFileIds(targetCid, settings) : new Set(),
       };
     }
@@ -763,6 +778,7 @@
       wpPathId: folderCid,
       watchCid: folderCid,
       folderName,
+      isRandomFolder: true,
       beforeFileIds: new Set(),
     };
   }
@@ -823,7 +839,235 @@
     return cid;
   }
 
-  async function waitForCompletedFiles(job, settings) {
+  async function waitForOfflineOrDirectory(job, settings, matcher, historyId) {
+    if (!settings.waitOfflineTaskStatus) {
+      upsertHistoryItem({ id: historyId, status: 'directory watch' });
+      const files = await waitForCompletedFiles(job, settings, historyId);
+      return { usedOfflineStatus: false, files };
+    }
+
+    try {
+      await waitForOfflineTasks(job, settings, matcher, historyId);
+      return { usedOfflineStatus: true };
+    } catch (error) {
+      console.warn('[Send to 115] 离线任务状态匹配失败，回退目录轮询', error);
+      upsertHistoryItem({
+        id: historyId,
+        status: 'fallback directory watch',
+        error: `任务状态不可用，回退目录轮询：${error.message || String(error)}`,
+      });
+      const files = await waitForCompletedFiles(job, settings, historyId);
+      return { usedOfflineStatus: false, files };
+    }
+  }
+
+  async function waitForOfflineTasks(job, settings, matcher, historyId) {
+    const startedAt = Date.now();
+    let noMatchRounds = 0;
+
+    while (Date.now() - startedAt < Number(settings.pollTimeoutMs)) {
+      const tasks = await listOfflineTasks();
+      const matched = tasks.filter((task) => matchOfflineTask(task, matcher, job));
+      const done = matched.filter(isOfflineTaskDone);
+      const failed = matched.filter(isOfflineTaskFailed);
+      const statusText = matched.length
+        ? `offline ${done.length}/${matched.length}${failed.length ? ` failed ${failed.length}` : ''}`
+        : 'offline matching';
+
+      upsertHistoryItem({
+        id: historyId,
+        status: statusText,
+        error: describeOfflineTasks(matched),
+      });
+      notify('等待 115 离线任务完成', statusText);
+
+      if (failed.length) {
+        throw new Error(`115 离线任务失败：${describeOfflineTasks(failed) || '未知错误'}`);
+      }
+
+      if (matched.length && done.length === matched.length) {
+        return matched;
+      }
+
+      if (!matched.length) {
+        noMatchRounds += 1;
+        if (noMatchRounds >= 3) {
+          throw new Error('连续 3 次未匹配到本次离线任务');
+        }
+      } else {
+        noMatchRounds = 0;
+      }
+
+      await sleep(Number(settings.pollIntervalMs));
+    }
+
+    throw new Error('等待 115 离线任务状态完成超时');
+  }
+
+  async function listOfflineTasks() {
+    try {
+      return await listOfflineTasksByMethod('POST');
+    } catch (error) {
+      console.warn('[Send to 115] POST 获取离线任务列表失败，尝试 GET', error);
+      return listOfflineTasksByMethod('GET');
+    }
+  }
+
+  async function listOfflineTasksByMethod(method) {
+    const token = await getSignToken();
+    const userId = token.userId || await getOptionalUserId();
+    const params = new URLSearchParams();
+    params.set('page', '1');
+    params.set('uid', userId || '');
+    params.set('sign', token.sign);
+    params.set('time', token.time);
+
+    const response = await request({
+      method,
+      url: method === 'GET' ? `${API.taskList}&${params}` : API.taskList,
+      data: method === 'GET' ? undefined : params.toString(),
+      headers: {
+        'Accept': 'application/json, text/javascript, */*; q=0.01',
+        ...(method === 'GET' ? {} : { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' }),
+        'Origin': 'https://115.com',
+        'Referer': 'https://115.com/',
+        'X-Requested-With': 'XMLHttpRequest',
+      },
+    });
+
+    const json = parseJson(response.responseText);
+    if (json.state === false) {
+      throw new Error(json.error_msg || json.msg || '获取 115 离线任务列表失败');
+    }
+    return extractOfflineTasks(json);
+  }
+
+  function extractOfflineTasks(value) {
+    const tasks = [];
+    visitObjects(value, (item) => {
+      if (looksLikeOfflineTask(item)) tasks.push(item);
+    });
+    return dedupeObjects(tasks);
+  }
+
+  function looksLikeOfflineTask(item) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
+    const keys = Object.keys(item);
+    const hasTaskIdentity = keys.some((key) => /(^|_)(hash|info_hash|task_id|torrent_id|url)$/i.test(key));
+    const hasTaskState = keys.some((key) => /(status|percent|progress|state|file_id|wp_path_id|cid)/i.test(key));
+    return hasTaskIdentity && hasTaskState;
+  }
+
+  function buildOfflineTaskMatcher(results, urls, job) {
+    const values = {
+      ids: new Set(),
+      hashes: new Set(),
+      urls: new Set(urls.map(normalizeComparableUrl)),
+      cids: new Set([String(job.wpPathId || ''), String(job.watchCid || '')].filter(Boolean)),
+    };
+
+    for (const result of results) {
+      collectMatcherValues(result.response, values);
+    }
+
+    return values;
+  }
+
+  function collectMatcherValues(value, values) {
+    visitObjects(value, (item) => {
+      for (const [key, raw] of Object.entries(item)) {
+        if (raw === undefined || raw === null || typeof raw === 'object') continue;
+        const text = String(raw).trim();
+        if (!text) continue;
+
+        if (/^(task_id|tid|id)$/i.test(key)) values.ids.add(text);
+        if (/hash/i.test(key)) values.hashes.add(text.toLowerCase());
+        if (/^(url|source_url|torrent_url)$/i.test(key)) values.urls.add(normalizeComparableUrl(text));
+        if (/^(cid|wp_path_id|save_cid)$/i.test(key)) values.cids.add(text);
+      }
+    });
+  }
+
+  function matchOfflineTask(task, matcher, job) {
+    const taskValues = {
+      ids: new Set(),
+      hashes: new Set(),
+      urls: new Set(),
+      cids: new Set(),
+    };
+    collectMatcherValues(task, taskValues);
+
+    if (hasIntersection(taskValues.ids, matcher.ids)) return true;
+    if (hasIntersection(taskValues.hashes, matcher.hashes)) return true;
+    if (hasIntersection(taskValues.urls, matcher.urls)) return true;
+    if (job.isRandomFolder && job.folderName && objectText(task).includes(job.folderName)) return true;
+    if (job.isRandomFolder && hasIntersection(taskValues.cids, matcher.cids)) return true;
+    return false;
+  }
+
+  function isOfflineTaskDone(task) {
+    const text = objectText(task).toLowerCase();
+    if (/(完成|成功|done|success|finished|complete)/i.test(text)) return true;
+
+    const status = findFirstByKey(task, /(status|state)$/i);
+    if (['2', '3', '4', '100'].includes(String(status))) return true;
+
+    const percent = Number(findFirstByKey(task, /(percent|progress|percent_done)$/i));
+    if (Number.isFinite(percent) && percent >= 100) return true;
+
+    return Boolean(findFirstByKey(task, /^(file_id|fid|pickcode|pick_code)$/i));
+  }
+
+  function isOfflineTaskFailed(task) {
+    const text = objectText(task).toLowerCase();
+    if (/(失败|错误|取消|fail|failed|error|cancel)/i.test(text)) return true;
+    const status = String(findFirstByKey(task, /(status|state)$/i) || '').toLowerCase();
+    return ['-1', '5', 'failed', 'fail', 'error'].includes(status);
+  }
+
+  function describeOfflineTasks(tasks) {
+    return tasks.slice(0, 3).map((task) => {
+      const name = findFirstByKey(task, /^(name|file_name|filename|n)$/i);
+      const status = findFirstByKey(task, /(status|state|percent|progress)$/i);
+      const hash = findFirstByKey(task, /hash/i);
+      return [name, status, hash].filter(Boolean).join(' / ');
+    }).filter(Boolean).join('; ');
+  }
+
+  async function waitForFilesAfterOfflineWait(job, settings, historyId) {
+    const startedAt = Date.now();
+    const fileAppearTimeoutMs = Math.min(Number(settings.pollTimeoutMs), Math.max(Number(settings.pollIntervalMs) * 4, 120000));
+
+    while (Date.now() - startedAt < fileAppearTimeoutMs) {
+      const files = await listDownloadableFiles(job.watchCid, settings);
+      const newFiles = files.filter((file) => !job.beforeFileIds.has(file.id));
+      if (newFiles.length) return newFiles;
+      if (historyId) upsertHistoryItem({ id: historyId, status: 'offline done, waiting files' });
+      await sleep(Math.min(Number(settings.pollIntervalMs), 15000));
+    }
+
+    throw new Error('离线任务已完成，但目标目录未找到新增文件');
+  }
+
+  async function getFilesReadyForPush(job, settings, historyId, waitResult) {
+    if (!waitResult.usedOfflineStatus) {
+      return waitResult.files || waitForCompletedFiles(job, settings, historyId);
+    }
+
+    try {
+      return await waitForFilesAfterOfflineWait(job, settings, historyId);
+    } catch (error) {
+      console.warn('[Send to 115] 离线状态完成后未发现文件，回退目录轮询', error);
+      upsertHistoryItem({
+        id: historyId,
+        status: 'fallback directory watch',
+        error: `离线状态完成但目录未出文件，回退目录轮询：${error.message || String(error)}`,
+      });
+      return waitForCompletedFiles(job, settings, historyId);
+    }
+  }
+
+  async function waitForCompletedFiles(job, settings, historyId) {
     const startedAt = Date.now();
     let lastSignature = '';
     let stableCount = 0;
@@ -843,6 +1087,8 @@
         lastSignature = signature;
       }
 
+      const status = `directory ${newFiles.length} files stable ${stableCount}/${settings.stableRounds}`;
+      if (historyId) upsertHistoryItem({ id: historyId, status });
       notify('等待 115 离线完成', `${newFiles.length} 个文件，稳定 ${stableCount}/${settings.stableRounds}`);
 
       if (newFiles.length && stableCount >= Number(settings.stableRounds)) {
@@ -996,6 +1242,72 @@
     }
 
     return '';
+  }
+
+  function visitObjects(value, visitor, seen = new Set()) {
+    if (!value || typeof value !== 'object' || seen.has(value)) return;
+    seen.add(value);
+
+    if (!Array.isArray(value)) visitor(value);
+    for (const nested of Object.values(value)) {
+      visitObjects(nested, visitor, seen);
+    }
+  }
+
+  function dedupeObjects(items) {
+    const seen = new Set();
+    const unique = [];
+    for (const item of items) {
+      const key = [
+        findFirstByKey(item, /^(task_id|tid|id)$/i),
+        findFirstByKey(item, /hash/i),
+        findFirstByKey(item, /^(url|source_url)$/i),
+        findFirstByKey(item, /^(name|file_name|filename|n)$/i),
+      ].filter(Boolean).join('|') || JSON.stringify(item).slice(0, 200);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      unique.push(item);
+    }
+    return unique;
+  }
+
+  function hasIntersection(left, right) {
+    for (const item of left) {
+      if (item && right.has(item)) return true;
+    }
+    return false;
+  }
+
+  function normalizeComparableUrl(url) {
+    return String(url || '').trim().replace(/&amp;/g, '&');
+  }
+
+  function objectText(value) {
+    const parts = [];
+    visitObjects(value, (item) => {
+      for (const raw of Object.values(item)) {
+        if (raw === undefined || raw === null || typeof raw === 'object') continue;
+        parts.push(String(raw));
+      }
+    });
+    return parts.join(' ');
+  }
+
+  function findFirstByKey(value, pattern) {
+    let found = '';
+    visitObjects(value, (item) => {
+      if (found) return;
+      for (const [key, raw] of Object.entries(item)) {
+        if (!pattern.test(key)) continue;
+        if (raw === undefined || raw === null || typeof raw === 'object') continue;
+        const text = String(raw).trim();
+        if (text) {
+          found = text;
+          return;
+        }
+      }
+    });
+    return found;
   }
 
   function buildAria2Options(file, settings) {
