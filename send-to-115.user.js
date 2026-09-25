@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.8.22
+// @version      0.8.24
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -30,7 +30,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.8.22';
+  const SCRIPT_VERSION = '0.8.24';
 
   const CONFIG = {
     settingsKey: 'send_to_115_settings',
@@ -57,6 +57,7 @@
     aria2SendCookie: true,
     aria2MaxConnectionPerServer: 4,
     aria2UserAgent: navigator.userAgent,
+    fastPollIntervalsSec: [5, 10, 10, 10],
     pollIntervalMs: 30000,
     pollTimeoutMs: 7200000,
     stableRounds: 2,
@@ -563,8 +564,7 @@
 
   function getMikanBatchAria2SubDir(table) {
     const bangumiName = getMikanBangumiName();
-    const subgroupName = getMikanSubgroupName(table);
-    return [bangumiName, subgroupName]
+    return [bangumiName]
       .filter(Boolean)
       .map(sanitizeAria2PathSegment)
       .join('/');
@@ -729,6 +729,7 @@
       aria2SendCookie: settings.aria2SendCookie !== false,
       aria2MaxConnectionPerServer: clampNumber(settings.aria2MaxConnectionPerServer, 0, 64, DEFAULT_SETTINGS.aria2MaxConnectionPerServer),
       aria2UserAgent: String(settings.aria2UserAgent || navigator.userAgent).trim(),
+      fastPollIntervalsSec: normalizeFastPollIntervalsSec(settings.fastPollIntervalsSec),
       pollIntervalMs: clampNumber(settings.pollIntervalMs, 5000, 600000, DEFAULT_SETTINGS.pollIntervalMs),
       pollTimeoutMs: clampNumber(settings.pollTimeoutMs, 60000, 86400000, DEFAULT_SETTINGS.pollTimeoutMs),
       stableRounds: clampNumber(settings.stableRounds, 1, 20, DEFAULT_SETTINGS.stableRounds),
@@ -777,6 +778,13 @@
     const number = Number(value);
     if (!Number.isFinite(number)) return fallback;
     return Math.min(max, Math.max(min, Math.round(number)));
+  }
+
+  function normalizeFastPollIntervalsSec(value) {
+    const source = Array.isArray(value) ? value : DEFAULT_SETTINGS.fastPollIntervalsSec;
+    return source
+      .map((item) => clampNumber(item, 1, 600, NaN))
+      .filter((item) => Number.isFinite(item));
   }
 
   function initPanel() {
@@ -927,6 +935,7 @@
       randomFolderContainerName: 'aria2',
       aria2SendCookie: true,
       aria2MaxConnectionPerServer: 4,
+      fastPollIntervalsSec: [5, 10, 10, 10],
       pollIntervalMs: 30000,
       pollTimeoutMs: 7200000,
       stableRounds: 2,
@@ -1595,6 +1604,7 @@
   async function waitForOfflineTasks(job, settings, matcher, historyId) {
     const startedAt = Date.now();
     const expectedCount = Math.max(1, Number(job.expectedCount || 1));
+    let pollIndex = 0;
 
     while (Date.now() - startedAt < Number(settings.pollTimeoutMs)) {
       const tasks = await listOfflineTasks();
@@ -1628,10 +1638,20 @@
         return done.slice(0, expectedCount);
       }
 
-      await sleep(Number(settings.pollIntervalMs));
+      await sleep(getPollWaitMs(settings, pollIndex));
+      pollIndex += 1;
     }
 
     throw new Error('等待 115 离线任务状态完成超时');
+  }
+
+  function getPollWaitMs(settings, pollIndex, maxWaitMs) {
+    const fastIntervals = Array.isArray(settings.fastPollIntervalsSec) ? settings.fastPollIntervalsSec : [];
+    const fastMs = Number(fastIntervals[pollIndex]) * 1000;
+    const waitMs = Number.isFinite(fastMs) && fastMs > 0
+      ? fastMs
+      : Number(settings.pollIntervalMs);
+    return Math.min(waitMs, maxWaitMs || waitMs);
   }
 
   async function listOfflineTasks() {
@@ -1794,6 +1814,7 @@
     const startedAt = Date.now();
     const fileAppearTimeoutMs = Number(settings.pollTimeoutMs);
     const expectedCount = Math.max(1, Number(job.expectedCount || doneTasks.length || 1));
+    let pollIndex = 0;
     const expectedTopIds = new Set(doneTasks
       .map((task) => String(findFirstByKey(task, /^file_id$/i) || '').trim())
       .filter(Boolean));
@@ -1828,7 +1849,8 @@
           pendingFiles: pendingFiles.map((file) => summarizeDownloadFile(file)),
         });
       }
-      await sleep(Math.min(Number(settings.pollIntervalMs), 15000));
+      await sleep(getPollWaitMs(settings, pollIndex, 15000));
+      pollIndex += 1;
     }
 
     throw new Error('离线任务已完成，但目标目录未找到可推送的就绪文件');
@@ -1843,6 +1865,7 @@
     const startedAt = Date.now();
     let lastSignature = '';
     let stableCount = 0;
+    let pollIndex = 0;
 
     while (Date.now() - startedAt < Number(settings.pollTimeoutMs)) {
       const files = await listDownloadableFiles(job.watchCid, settings);
@@ -1878,7 +1901,8 @@
         return readyFiles;
       }
 
-      await sleep(Number(settings.pollIntervalMs));
+      await sleep(getPollWaitMs(settings, pollIndex));
+      pollIndex += 1;
     }
 
     throw new Error('等待 115 离线完成超时');
@@ -2141,7 +2165,7 @@
       } catch (error) {
         if (!isIncompleteUploadError(error)) throw error;
 
-        const waitMs = Math.min(Number(settings.pollIntervalMs), 30000);
+        const waitMs = getPollWaitMs(settings, attempts - 1, 30000);
         if (historyId) {
           upsertHistoryItem({
             id: historyId,
