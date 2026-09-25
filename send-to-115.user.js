@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.7.4
+// @version      0.7.5
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -77,6 +77,7 @@
       });
       return `https://webapi.115.com/files?${params}`;
     },
+    categoryGet: (cid) => `https://webapi.115.com/category/get?aid=1&cid=${encodeURIComponent(cid)}`,
     download: (pickcode) => `https://webapi.115.com/files/download?pickcode=${encodeURIComponent(pickcode)}&_=${Date.now()}`,
     chromeDownurl: (time) => `https://proapi.115.com/app/chrome/downurl?t=${time}`,
     addMany: 'https://115.com/web/lixian/?ct=lixian&ac=add_task_urls',
@@ -1593,11 +1594,12 @@
       }
 
       try {
-        const download = await getDownloadUrl(file);
-        file.readyDownload = download;
-        readyFiles.push(file);
+        const enrichedFile = await enrichFileFromCategory(file);
+        const download = await getDownloadUrl(enrichedFile);
+        enrichedFile.readyDownload = download;
+        readyFiles.push(enrichedFile);
         if (historyId) appendHistoryLog(historyId, 'pending file direct url ready', {
-          file: summarizeDownloadFile(file),
+          file: summarizeDownloadFile(enrichedFile),
           url: download.url,
         });
       } catch (error) {
@@ -1611,6 +1613,43 @@
       }
     }
     return readyFiles;
+  }
+
+  async function enrichFileFromCategory(file) {
+    if (!file || !file.id) return file;
+
+    const response = await request({
+      method: 'GET',
+      url: API.categoryGet(file.id),
+      headers: {
+        'Accept': 'application/json, text/javascript, */*; q=0.01',
+        'Referer': 'https://webapi.115.com/bridge_2.0.html?namespace=Core.DataAccess&api=UDataAPI&_t=v5',
+        'X-Requested-With': 'XMLHttpRequest',
+      },
+    });
+    const json = parseJson(response.responseText);
+    logJson('115 category/get response', {
+      file: summarizeDownloadFile(file),
+      response: summarizeCategoryGetResponse(json),
+    });
+
+    if (json.state === false) {
+      const error = new Error(json.error_msg || json.msg || json.error || '获取 115 文件详情失败');
+      error.response = json;
+      throw error;
+    }
+
+    const size = parseFileSize(json.size || json.file_size || json.s);
+    return {
+      ...file,
+      name: String(json.file_name || json.name || file.name || '').trim(),
+      pickcode: String(json.pick_code || json.pickcode || file.pickcode || '').trim(),
+      size: size || file.size,
+      raw: {
+        ...(file.raw || {}),
+        ...summarizeCategoryGetResponse(json),
+      },
+    };
   }
 
   async function snapshotFileIds(cid, settings) {
@@ -1655,7 +1694,7 @@
     const pickcode = String(entry.pc || entry.pick_code || entry.pickcode || '').trim();
     const name = String(entry.n || entry.name || entry.file_name || '').trim();
     const isDir = Boolean(entry.is_dir || entry.isdir || entry.cid && !entry.fid && !pickcode);
-    const size = Number(entry.s || entry.size || entry.file_size || entry.fs || entry.fsize || entry.f_size || 0);
+    const size = parseFileSize(entry.s || entry.size || entry.file_size || entry.fs || entry.fsize || entry.f_size || 0);
 
     return {
       id,
@@ -1682,6 +1721,44 @@
       if (entry[key] !== undefined && entry[key] !== null) summary[key] = entry[key];
     }
     return summary;
+  }
+
+  function summarizeCategoryGetResponse(json) {
+    const summary = {};
+    for (const key of ['state', 'error', 'errNo', 'msg', 'count', 'size', 'file_size', 'file_name', 'pick_code', 'pickcode', 'sha1', 'ptime', 'ctime', 'utime', 'open_time', 'rtime', 'file_category']) {
+      if (json && json[key] !== undefined && json[key] !== null) summary[key] = json[key];
+    }
+    if (json && Array.isArray(json.paths)) {
+      summary.paths = json.paths.map((item) => ({
+        file_id: item.file_id,
+        file_name: item.file_name,
+      }));
+    }
+    return summary;
+  }
+
+  function parseFileSize(value) {
+    if (value === undefined || value === null || value === '') return 0;
+    if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+
+    const text = String(value).trim();
+    const number = Number(text);
+    if (Number.isFinite(number)) return number;
+
+    const match = text.match(/^([\d.]+)\s*([kmgtp]?b)$/i);
+    if (!match) return 0;
+
+    const amount = Number(match[1]);
+    if (!Number.isFinite(amount)) return 0;
+    const units = {
+      b: 1,
+      kb: 1024,
+      mb: 1024 ** 2,
+      gb: 1024 ** 3,
+      tb: 1024 ** 4,
+      pb: 1024 ** 5,
+    };
+    return Math.round(amount * (units[match[2].toLowerCase()] || 1));
   }
 
   async function pushFilesToAria2(files, settings, historyId) {
@@ -1868,7 +1945,7 @@
     return {
       url,
       name: String(item.file_name || item.name || ''),
-      size: Number(item.file_size || item.size || 0),
+      size: parseFileSize(item.file_size || item.size || 0),
       pickcode: String(item.pick_code || item.pickcode || ''),
       raw: item,
     };
