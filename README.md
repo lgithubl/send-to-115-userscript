@@ -11,6 +11,7 @@ Tampermonkey userscript for sending cloud links to 115 offline download.
 - Optional `wp_path_id` configuration for the target 115 folder.
 - Keyboard shortcut: `Alt` + `Shift` + `1`.
 - Optional random 115 folder per batch, polling completion, and pushing completed files to aria2 RPC.
+- Floating panel with settings, recent send history, and resend actions.
 
 ## Install
 
@@ -22,12 +23,13 @@ Open `send-to-115.user.js` with Tampermonkey, or use the raw GitHub URL after pu
 2. On any page, select text containing links, or right-click a link/text block once.
 3. Open the Tampermonkey menu and click `发送到 115（按配置）`.
 4. To wait for completion and push files to aria2, click `发送到 115，完成后推送 aria2`.
+5. Click the collapsed floating `115` button for configuration, recent history, and resend actions.
 
 Pure userscripts cannot add a top-level item directly into Chrome's native context menu. This script records the right-clicked content without replacing the native menu, then exposes the send action through Tampermonkey's userscript menu.
 
 ## Configuration
 
-Use the Tampermonkey menu command `设置 115 + aria2 配置` to edit JSON settings. `发送到 115（按配置）` follows `pushToAria2`; `仅提交到 115 离线` and `发送到 115，完成后推送 aria2` override it for one run.
+Use the floating panel or the Tampermonkey menu command `设置 115 + aria2 配置` to edit JSON settings. `发送到 115（按配置）` follows `pushToAria2`; `仅提交到 115 离线` and `发送到 115，完成后推送 aria2` override it for one run.
 
 ```json
 {
@@ -48,6 +50,30 @@ Use the Tampermonkey menu command `设置 115 + aria2 配置` to edit JSON setti
   "includeSubfolders": true
 }
 ```
+
+Example for your aria2 RPC endpoint:
+
+```json
+{
+  "wpPathId": "",
+  "createRandomFolder": true,
+  "randomFolderParentCid": "",
+  "randomFolderPrefix": "aria2",
+  "pushToAria2": true,
+  "aria2RpcUrl": "http://token:admin_aria2@my2.mynas.local.com:11582/jsonrpc",
+  "aria2RpcSecret": "",
+  "aria2DownloadDir": "",
+  "aria2ExtraOptionsJson": "{}",
+  "aria2SendReferer": true,
+  "aria2UserAgent": "browser user agent",
+  "pollIntervalMs": 30000,
+  "pollTimeoutMs": 7200000,
+  "stableRounds": 2,
+  "includeSubfolders": true
+}
+```
+
+When `aria2RpcUrl` uses the `http://token:SECRET@host/jsonrpc` shorthand, the script stores it as a normal RPC URL and moves `SECRET` into `aria2RpcSecret`.
 
 Recommended mode:
 

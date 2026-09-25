@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.3.0
+// @version      0.4.0
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -27,8 +27,11 @@
   const CONFIG = {
     settingsKey: 'send_to_115_settings',
     oldWpPathIdKey: 'send_to_115_wp_path_id',
+    historyKey: 'send_to_115_history',
+    panelCollapsedKey: 'send_to_115_panel_collapsed',
     requestTimeout: 30000,
     maxBatchSize: 50,
+    maxHistoryItems: 20,
   };
 
   const DEFAULT_SETTINGS = {
@@ -80,6 +83,8 @@
     text: '',
   };
 
+  let panelCollapsed = Boolean(GM_getValue(CONFIG.panelCollapsedKey, true));
+
   GM_addStyle(`
     .send-to-115-toast {
       position: fixed;
@@ -104,6 +109,116 @@
       display: block;
       color: #d1d5db;
       overflow-wrap: anywhere;
+    }
+    .send-to-115-panel {
+      position: fixed;
+      right: 16px;
+      bottom: 76px;
+      z-index: 2147483646;
+      width: min(560px, calc(100vw - 32px));
+      max-height: min(720px, calc(100vh - 104px));
+      border: 1px solid rgba(17, 24, 39, .16);
+      border-radius: 8px;
+      background: #fff;
+      box-shadow: 0 18px 48px rgba(15, 23, 42, .22);
+      color: #111827;
+      font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      overflow: hidden;
+    }
+    .send-to-115-panel button,
+    .send-to-115-panel textarea {
+      font: inherit;
+    }
+    .send-to-115-panel button {
+      border: 1px solid rgba(17, 24, 39, .16);
+      border-radius: 6px;
+      background: #fff;
+      color: #111827;
+      cursor: pointer;
+      padding: 6px 9px;
+    }
+    .send-to-115-panel button:hover {
+      background: #f3f4f6;
+    }
+    .send-to-115-panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 12px;
+      border-bottom: 1px solid #e5e7eb;
+      background: #f9fafb;
+    }
+    .send-to-115-panel-title {
+      font-weight: 700;
+      font-size: 14px;
+    }
+    .send-to-115-panel-body {
+      display: grid;
+      gap: 12px;
+      max-height: calc(min(720px, calc(100vh - 104px)) - 45px);
+      overflow: auto;
+      padding: 12px;
+    }
+    .send-to-115-actions,
+    .send-to-115-panel-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    .send-to-115-section-title {
+      margin: 0 0 8px;
+      font-weight: 700;
+      color: #374151;
+    }
+    .send-to-115-settings-textarea {
+      box-sizing: border-box;
+      width: 100%;
+      min-height: 260px;
+      resize: vertical;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      color: #111827;
+      background: #fff;
+      padding: 10px;
+      font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      tab-size: 2;
+    }
+    .send-to-115-history {
+      display: grid;
+      gap: 8px;
+    }
+    .send-to-115-history-item {
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 9px;
+      background: #fff;
+    }
+    .send-to-115-history-meta {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      color: #6b7280;
+      font-size: 12px;
+      margin-bottom: 6px;
+    }
+    .send-to-115-history-url {
+      color: #111827;
+      overflow-wrap: anywhere;
+      margin-bottom: 8px;
+    }
+    .send-to-115-panel-collapsed {
+      width: auto;
+      max-height: none;
+      border-radius: 999px;
+      overflow: visible;
+    }
+    .send-to-115-panel-collapsed button {
+      border-radius: 999px;
+      padding: 9px 14px;
+      font-weight: 700;
+      box-shadow: 0 12px 32px rgba(15, 23, 42, .18);
     }
   `);
 
@@ -132,8 +247,13 @@
   });
 
   GM_registerMenuCommand('设置 115 + aria2 配置', () => {
-    editSettings();
+    panelCollapsed = false;
+    GM_setValue(CONFIG.panelCollapsedKey, panelCollapsed);
+    renderPanel();
+    focusSettingsEditor();
   });
+
+  initPanel();
 
   document.addEventListener('contextmenu', (event) => {
     const urls = collectEventUrls(event);
@@ -237,33 +357,26 @@
   }
 
   function editSettings() {
-    const current = getSettings();
-    const editable = JSON.stringify(current, null, 2);
-    const next = window.prompt('编辑配置 JSON：', editable);
-    if (next === null) return;
-
-    try {
-      const parsed = JSON.parse(next);
-      const settings = normalizeSettings({
-        ...DEFAULT_SETTINGS,
-        ...parsed,
-      });
-      GM_setValue(CONFIG.settingsKey, settings);
-      notify('配置已保存', settings.pushToAria2 ? '已启用 aria2 推送' : '仅提交 115 离线');
-    } catch (error) {
-      notify('配置保存失败', error.message || String(error));
-    }
+    panelCollapsed = false;
+    GM_setValue(CONFIG.panelCollapsedKey, panelCollapsed);
+    renderPanel();
+    focusSettingsEditor();
   }
 
   function normalizeSettings(settings) {
+    const aria2 = normalizeAria2Endpoint(
+      String(settings.aria2RpcUrl || DEFAULT_SETTINGS.aria2RpcUrl).trim(),
+      String(settings.aria2RpcSecret || '').trim(),
+    );
+
     return {
       wpPathId: String(settings.wpPathId || '').trim(),
       createRandomFolder: Boolean(settings.createRandomFolder),
       randomFolderParentCid: String(settings.randomFolderParentCid || '').trim(),
       randomFolderPrefix: String(settings.randomFolderPrefix || 'aria2').trim() || 'aria2',
       pushToAria2: Boolean(settings.pushToAria2),
-      aria2RpcUrl: String(settings.aria2RpcUrl || DEFAULT_SETTINGS.aria2RpcUrl).trim(),
-      aria2RpcSecret: String(settings.aria2RpcSecret || '').trim(),
+      aria2RpcUrl: aria2.url,
+      aria2RpcSecret: aria2.secret,
       aria2DownloadDir: String(settings.aria2DownloadDir || '').trim(),
       aria2ExtraOptionsJson: String(settings.aria2ExtraOptionsJson || '{}').trim() || '{}',
       aria2SendReferer: Boolean(settings.aria2SendReferer),
@@ -273,6 +386,28 @@
       stableRounds: clampNumber(settings.stableRounds, 1, 20, DEFAULT_SETTINGS.stableRounds),
       includeSubfolders: Boolean(settings.includeSubfolders),
     };
+  }
+
+  function normalizeAria2Endpoint(url, secret) {
+    if (!url) return { url: DEFAULT_SETTINGS.aria2RpcUrl, secret };
+
+    try {
+      const parsed = new URL(url);
+      const username = decodeURIComponent(parsed.username || '');
+      const password = decodeURIComponent(parsed.password || '');
+      if (username === 'token' && password) {
+        parsed.username = '';
+        parsed.password = '';
+        return {
+          url: parsed.toString(),
+          secret: secret || password,
+        };
+      }
+    } catch (error) {
+      return { url, secret };
+    }
+
+    return { url, secret };
   }
 
   function safeJsonParse(value, fallback) {
@@ -289,6 +424,258 @@
     return Math.min(max, Math.max(min, Math.round(number)));
   }
 
+  function initPanel() {
+    renderPanel();
+  }
+
+  function renderPanel() {
+    let panel = document.querySelector('.send-to-115-panel');
+    if (!panel) {
+      panel = document.createElement('div');
+      panel.className = 'send-to-115-panel';
+      document.documentElement.appendChild(panel);
+    }
+
+    panel.className = `send-to-115-panel${panelCollapsed ? ' send-to-115-panel-collapsed' : ''}`;
+    panel.innerHTML = '';
+
+    if (panelCollapsed) {
+      const openButton = document.createElement('button');
+      openButton.type = 'button';
+      openButton.textContent = '115';
+      openButton.title = '打开 Send to 115 面板';
+      openButton.addEventListener('click', () => {
+        panelCollapsed = false;
+        GM_setValue(CONFIG.panelCollapsedKey, panelCollapsed);
+        renderPanel();
+      });
+      panel.appendChild(openButton);
+      return;
+    }
+
+    const header = document.createElement('div');
+    header.className = 'send-to-115-panel-header';
+
+    const title = document.createElement('div');
+    title.className = 'send-to-115-panel-title';
+    title.textContent = 'Send to 115';
+    header.appendChild(title);
+
+    const collapseButton = document.createElement('button');
+    collapseButton.type = 'button';
+    collapseButton.textContent = '收起';
+    collapseButton.addEventListener('click', () => {
+      panelCollapsed = true;
+      GM_setValue(CONFIG.panelCollapsedKey, panelCollapsed);
+      renderPanel();
+    });
+    header.appendChild(collapseButton);
+    panel.appendChild(header);
+
+    const body = document.createElement('div');
+    body.className = 'send-to-115-panel-body';
+
+    const actions = document.createElement('div');
+    actions.className = 'send-to-115-actions';
+    appendButton(actions, '按配置发送', () => sendUrls(getPanelUrls()));
+    appendButton(actions, '仅提交 115', () => sendUrls(getPanelUrls(), { pushToAria2: false }));
+    appendButton(actions, '发送并推 aria2', () => sendUrls(getPanelUrls(), { pushToAria2: true }));
+    body.appendChild(actions);
+
+    const configSection = document.createElement('section');
+    const configTitle = document.createElement('p');
+    configTitle.className = 'send-to-115-section-title';
+    configTitle.textContent = '配置';
+    configSection.appendChild(configTitle);
+
+    const textarea = document.createElement('textarea');
+    textarea.className = 'send-to-115-settings-textarea';
+    textarea.spellcheck = false;
+    textarea.value = JSON.stringify(getSettings(), null, 2);
+    configSection.appendChild(textarea);
+
+    const configActions = document.createElement('div');
+    configActions.className = 'send-to-115-panel-row';
+    appendButton(configActions, '保存配置', () => saveSettingsFromPanel(textarea));
+    appendButton(configActions, '填入 aria2 示例', () => {
+      textarea.value = JSON.stringify(getExampleSettings(), null, 2);
+      textarea.focus();
+    });
+    appendButton(configActions, '重新载入', () => {
+      textarea.value = JSON.stringify(getSettings(), null, 2);
+      textarea.focus();
+    });
+    configSection.appendChild(configActions);
+    body.appendChild(configSection);
+
+    const historySection = document.createElement('section');
+    const historyTitle = document.createElement('p');
+    historyTitle.className = 'send-to-115-section-title';
+    historyTitle.textContent = '最近发送';
+    historySection.appendChild(historyTitle);
+
+    const history = document.createElement('div');
+    history.className = 'send-to-115-history';
+    renderHistoryList(history);
+    historySection.appendChild(history);
+
+    const historyActions = document.createElement('div');
+    historyActions.className = 'send-to-115-panel-row';
+    appendButton(historyActions, '清空列表', () => {
+      GM_setValue(CONFIG.historyKey, []);
+      renderPanel();
+    });
+    historySection.appendChild(historyActions);
+    body.appendChild(historySection);
+
+    panel.appendChild(body);
+  }
+
+  function appendButton(parent, label, onClick) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = label;
+    button.addEventListener('click', onClick);
+    parent.appendChild(button);
+    return button;
+  }
+
+  function getPanelUrls() {
+    return lastContext.urls.length ? lastContext.urls : collectCurrentUrls();
+  }
+
+  function saveSettingsFromPanel(textarea) {
+    try {
+      const parsed = JSON.parse(textarea.value);
+      const settings = normalizeSettings({
+        ...DEFAULT_SETTINGS,
+        ...parsed,
+      });
+      GM_setValue(CONFIG.settingsKey, settings);
+      textarea.value = JSON.stringify(settings, null, 2);
+      notify('配置已保存', settings.pushToAria2 ? '已启用 aria2 推送' : '仅提交 115 离线');
+    } catch (error) {
+      notify('配置保存失败', error.message || String(error));
+    }
+  }
+
+  function getExampleSettings() {
+    return normalizeSettings({
+      ...getSettings(),
+      createRandomFolder: true,
+      pushToAria2: true,
+      aria2RpcUrl: 'http://token:admin_aria2@my2.mynas.local.com:11582/jsonrpc',
+      aria2DownloadDir: '',
+      pollIntervalMs: 30000,
+      pollTimeoutMs: 7200000,
+      stableRounds: 2,
+    });
+  }
+
+  function focusSettingsEditor() {
+    window.setTimeout(() => {
+      const textarea = document.querySelector('.send-to-115-settings-textarea');
+      if (textarea) textarea.focus();
+    }, 0);
+  }
+
+  function renderHistoryList(container) {
+    const history = getHistory();
+    if (!history.length) {
+      const empty = document.createElement('div');
+      empty.className = 'send-to-115-history-item';
+      empty.textContent = '暂无记录';
+      container.appendChild(empty);
+      return;
+    }
+
+    for (const item of history) {
+      const row = document.createElement('div');
+      row.className = 'send-to-115-history-item';
+
+      const meta = document.createElement('div');
+      meta.className = 'send-to-115-history-meta';
+
+      const left = document.createElement('span');
+      left.textContent = `${formatTime(item.createdAt)} · ${item.urls.length} 条 · ${item.status || 'unknown'}`;
+      meta.appendChild(left);
+
+      const right = document.createElement('span');
+      right.textContent = item.folderName || item.wpPathId || '';
+      meta.appendChild(right);
+      row.appendChild(meta);
+
+      const url = document.createElement('div');
+      url.className = 'send-to-115-history-url';
+      url.textContent = item.error || item.urls[0] || '';
+      row.appendChild(url);
+
+      const controls = document.createElement('div');
+      controls.className = 'send-to-115-panel-row';
+      appendButton(controls, '重发', () => sendUrls(item.urls, item.overrides || {}));
+      appendButton(controls, '重发并推 aria2', () => sendUrls(item.urls, { ...(item.overrides || {}), pushToAria2: true }));
+      appendButton(controls, '仅提交 115', () => sendUrls(item.urls, { ...(item.overrides || {}), pushToAria2: false }));
+      row.appendChild(controls);
+
+      container.appendChild(row);
+    }
+  }
+
+  function getHistory() {
+    const saved = GM_getValue(CONFIG.historyKey, []);
+    return Array.isArray(saved) ? saved : safeJsonParse(saved, []);
+  }
+
+  function createHistoryItem(urls, settings, overrides) {
+    const item = {
+      id: `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      urls,
+      status: 'running',
+      folderName: '',
+      wpPathId: '',
+      pushedCount: 0,
+      error: '',
+      overrides: {
+        pushToAria2: Boolean(settings.pushToAria2),
+        ...(overrides || {}),
+      },
+    };
+    upsertHistoryItem(item);
+    return item.id;
+  }
+
+  function upsertHistoryItem(itemOrPatch) {
+    const history = getHistory();
+    const index = history.findIndex((item) => item.id === itemOrPatch.id);
+    const nextItem = {
+      ...(index === -1 ? {} : history[index]),
+      ...itemOrPatch,
+      updatedAt: Date.now(),
+    };
+
+    if (index === -1) {
+      history.unshift(nextItem);
+    } else {
+      history.splice(index, 1);
+      history.unshift(nextItem);
+    }
+
+    GM_setValue(CONFIG.historyKey, history.slice(0, CONFIG.maxHistoryItems));
+    if (!panelCollapsed) renderPanel();
+  }
+
+  function formatTime(value) {
+    if (!value) return '';
+    const date = new Date(value);
+    return [
+      String(date.getMonth() + 1).padStart(2, '0'),
+      String(date.getDate()).padStart(2, '0'),
+      `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`,
+    ].join(' ');
+  }
+
   async function sendUrls(urls, overrides = {}) {
     const uniqueUrls = Array.from(new Set(urls || []));
     if (!uniqueUrls.length) {
@@ -296,12 +683,20 @@
       return;
     }
 
+    const settings = {
+      ...getSettings(),
+      ...overrides,
+    };
+    const historyId = createHistoryItem(uniqueUrls, settings, overrides);
+
     try {
-      const settings = {
-        ...getSettings(),
-        ...overrides,
-      };
       const job = await prepareJob(settings);
+      upsertHistoryItem({
+        id: historyId,
+        status: 'prepared',
+        folderName: job.folderName,
+        wpPathId: job.wpPathId,
+      });
 
       notify('正在发送到 115', `${uniqueUrls.length} 条链接${job.folderName ? ` -> ${job.folderName}` : ''}`);
       const chunks = chunk(uniqueUrls, CONFIG.maxBatchSize);
@@ -318,14 +713,32 @@
       }
 
       if (!settings.pushToAria2) {
+        upsertHistoryItem({
+          id: historyId,
+          status: '115 added',
+        });
         notify('115 离线任务已添加', `${uniqueUrls.length} 条链接`);
         return;
       }
 
+      upsertHistoryItem({
+        id: historyId,
+        status: 'waiting',
+      });
       const files = await waitForCompletedFiles(job, settings);
       const pushed = await pushFilesToAria2(files, settings);
+      upsertHistoryItem({
+        id: historyId,
+        status: 'pushed',
+        pushedCount: pushed.length,
+      });
       notify('已推送到 aria2', `${pushed.length} 个文件`);
     } catch (error) {
+      upsertHistoryItem({
+        id: historyId,
+        status: 'failed',
+        error: error.message || String(error),
+      });
       notify('发送到 115 失败', error.message || String(error));
       console.error('[Send to 115]', error);
     }
