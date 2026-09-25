@@ -1,6 +1,5 @@
 (() => {
   window.addEventListener('message', async (event) => {
-    if (event.source !== window) return;
     const message = event.data;
     if (!message || message.source !== 'send-to-115-userscript' || !message.id) return;
 

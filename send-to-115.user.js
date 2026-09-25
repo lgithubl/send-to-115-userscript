@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.8.1
+// @version      0.8.2
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -23,12 +23,13 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_registerMenuCommand
 // @grant        GM_cookie
+// @grant        unsafeWindow
 // ==/UserScript==
 
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.8.1';
+  const SCRIPT_VERSION = '0.8.2';
 
   const CONFIG = {
     settingsKey: 'send_to_115_settings',
@@ -1974,6 +1975,14 @@
 
   async function tryExtensionChromeDownurl(file, encoded, time) {
     try {
+      const ping = await sendExtensionBridgeRequest({ action: 'ping' }, 3000);
+      logJson('115 extension bridge ping', {
+        ok: ping && ping.ok,
+        version: ping && ping.version,
+        error: ping && ping.error,
+      });
+      if (!ping || !ping.ok) return null;
+
       const response = await sendExtensionBridgeRequest({
         action: 'chromeDownurl',
         url: API.chromeDownurl(time),
@@ -1996,6 +2005,7 @@
       logJson('115 extension bridge unavailable', {
         file: summarizeDownloadFile(file),
         error: error.message || String(error),
+        hint: 'Reload the Send to 115 Bridge extension in chrome://extensions, then refresh this page.',
       });
       return null;
     }
@@ -2056,29 +2066,51 @@
 
   function sendExtensionBridgeRequest(payload, timeoutMs) {
     return new Promise((resolve, reject) => {
+      const targetWindow = getExtensionBridgeWindow();
+      const listeners = [window];
+      if (targetWindow && targetWindow !== window) listeners.push(targetWindow);
       const id = `send-to-115-${Date.now()}-${Math.random().toString(16).slice(2)}`;
       const timer = window.setTimeout(() => {
-        window.removeEventListener('message', onMessage);
+        cleanup();
         reject(new Error('extension bridge timeout'));
       }, timeoutMs || 10000);
 
+      function cleanup() {
+        for (const listenerWindow of listeners) {
+          try {
+            listenerWindow.removeEventListener('message', onMessage);
+          } catch (_) {}
+        }
+      }
+
       function onMessage(event) {
-        if (event.source !== window) return;
         const message = event.data;
         if (!message || message.source !== 'send-to-115-extension' || message.id !== id) return;
 
         window.clearTimeout(timer);
-        window.removeEventListener('message', onMessage);
+        cleanup();
         resolve(message.payload || null);
       }
 
-      window.addEventListener('message', onMessage);
-      window.postMessage({
+      for (const listenerWindow of listeners) {
+        try {
+          listenerWindow.addEventListener('message', onMessage);
+        } catch (_) {}
+      }
+
+      targetWindow.postMessage({
         source: 'send-to-115-userscript',
         id,
         payload,
       }, '*');
     });
+  }
+
+  function getExtensionBridgeWindow() {
+    try {
+      if (typeof unsafeWindow !== 'undefined' && unsafeWindow) return unsafeWindow;
+    } catch (_) {}
+    return window;
   }
 
   function summarizeDownloadFile(file) {

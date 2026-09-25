@@ -14,6 +14,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 async function handleMessage(payload) {
+  if (payload.action === 'ping') {
+    return {
+      ok: true,
+      version: chrome.runtime.getManifest().version,
+    };
+  }
+
   if (payload.action === 'chromeDownurl') {
     return chromeDownurl(payload);
   }
