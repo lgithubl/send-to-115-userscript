@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.8.12
+// @version      0.8.13
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -30,7 +30,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.8.12';
+  const SCRIPT_VERSION = '0.8.13';
 
   const CONFIG = {
     settingsKey: 'send_to_115_settings',
@@ -2063,7 +2063,7 @@
         debugCurl: response && response.debugCurl,
         tabError: response && response.tabError,
         aria2CookieNames: response && response.aria2CookieNames,
-        hasAria2CookieHeader: Boolean(response && response.aria2CookieHeader),
+        hasAria2CookieHeader: Boolean(response && (response.aria2CookieHeader || response.debugCurl && response.debugCurl.cookieHeader)),
         hasResponse: Boolean(response && response.response),
       });
       if (response && response.debugCurl) {
@@ -2072,11 +2072,12 @@
 
       if (!response || !response.ok || !response.response) return null;
       const result = parseChromeDownurlResult(file, encoded, response.response, 'extensionDownurl');
-      if (response.aria2CookieHeader) {
+      const aria2CookieHeader = response.aria2CookieHeader || (response.debugCurl && response.debugCurl.cookieHeader) || '';
+      if (aria2CookieHeader) {
         result.fileInfo = {
           ...(result.fileInfo || {}),
-          aria2CookieHeader: response.aria2CookieHeader,
-          aria2CookieNames: response.aria2CookieNames || [],
+          aria2CookieHeader,
+          aria2CookieNames: response.aria2CookieNames || getCookieNames(aria2CookieHeader),
         };
       }
       return result;
@@ -2741,6 +2742,9 @@
     const options = parseAria2Options(settings.aria2ExtraOptionsJson);
     if (settings.aria2DownloadDir && !options.dir) {
       options.dir = normalizeAria2Dir(settings.aria2DownloadDir);
+    }
+    if (!options.dir) {
+      throw new Error('aria2DownloadDir 未设置。按 ASMR 脚本的写法必须显式传 dir；请把它设为 aria2 所在机器/容器内真实可写目录。');
     }
     if (file.name && !options.out) {
       options.out = sanitizeAria2PathSegment(file.name);
