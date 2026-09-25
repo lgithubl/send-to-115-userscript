@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.8.11
+// @version      0.8.12
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -30,7 +30,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.8.11';
+  const SCRIPT_VERSION = '0.8.12';
 
   const CONFIG = {
     settingsKey: 'send_to_115_settings',
@@ -54,6 +54,7 @@
     aria2ExtraOptionsJson: '{}',
     aria2SendReferer: true,
     aria2SendCookie: true,
+    aria2MaxConnectionPerServer: 4,
     aria2UserAgent: navigator.userAgent,
     pollIntervalMs: 30000,
     pollTimeoutMs: 7200000,
@@ -534,6 +535,7 @@
       aria2ExtraOptionsJson: String(settings.aria2ExtraOptionsJson || '{}').trim() || '{}',
       aria2SendReferer: Boolean(settings.aria2SendReferer),
       aria2SendCookie: settings.aria2SendCookie !== false,
+      aria2MaxConnectionPerServer: clampNumber(settings.aria2MaxConnectionPerServer, 0, 64, DEFAULT_SETTINGS.aria2MaxConnectionPerServer),
       aria2UserAgent: String(settings.aria2UserAgent || navigator.userAgent).trim(),
       pollIntervalMs: clampNumber(settings.pollIntervalMs, 5000, 600000, DEFAULT_SETTINGS.pollIntervalMs),
       pollTimeoutMs: clampNumber(settings.pollTimeoutMs, 60000, 86400000, DEFAULT_SETTINGS.pollTimeoutMs),
@@ -730,6 +732,7 @@
       aria2RpcUrl: 'http://token:admin_aria2@my2.mynas.local.com:11582/jsonrpc',
       aria2DownloadDir: '',
       aria2SendCookie: true,
+      aria2MaxConnectionPerServer: 4,
       pollIntervalMs: 30000,
       pollTimeoutMs: 7200000,
       stableRounds: 2,
@@ -2736,10 +2739,20 @@
 
   function buildAria2Options(file, settings) {
     const options = parseAria2Options(settings.aria2ExtraOptionsJson);
-    if (settings.aria2DownloadDir) options.dir = settings.aria2DownloadDir;
-    if (file.name && !options.out) options.out = file.name;
+    if (settings.aria2DownloadDir && !options.dir) {
+      options.dir = normalizeAria2Dir(settings.aria2DownloadDir);
+    }
+    if (file.name && !options.out) {
+      options.out = sanitizeAria2PathSegment(file.name);
+    }
+    if (settings.aria2MaxConnectionPerServer > 0 && options['max-connection-per-server'] === undefined) {
+      options['max-connection-per-server'] = Number(settings.aria2MaxConnectionPerServer);
+    }
 
     const headers = Array.isArray(options.header) ? options.header.slice() : [];
+    if (!headers.some((header) => /^origin:/i.test(header))) {
+      headers.push('Origin: https://115.com');
+    }
     if (settings.aria2SendReferer && !headers.some((header) => /^referer:/i.test(header))) {
       headers.push('Referer: https://115.com/');
     }
@@ -2752,6 +2765,29 @@
     if (headers.length) options.header = headers;
 
     return options;
+  }
+
+  function normalizeAria2Dir(value) {
+    return String(value || '').trim().replace(/\\/g, '/').replace(/\/+$/, '');
+  }
+
+  function sanitizeAria2PathSegment(value) {
+    const text = String(value || '').trim();
+    const sanitized = text
+      .replace(/[\\/:*?"<>|]/g, (char) => ({
+        '\\': '＼',
+        '/': '／',
+        ':': '：',
+        '*': '＊',
+        '?': '？',
+        '"': "'",
+        '<': '＜',
+        '>': '＞',
+        '|': '｜',
+      }[char] || '_'))
+      .replace(/[\u0000-\u001f]/g, '_')
+      .replace(/[. ]+$/g, '');
+    return sanitized || 'download';
   }
 
   function redactAria2OptionsForLog(options) {
