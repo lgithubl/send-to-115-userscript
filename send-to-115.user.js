@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.8.15
+// @version      0.8.17
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -30,7 +30,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.8.15';
+  const SCRIPT_VERSION = '0.8.17';
 
   const CONFIG = {
     settingsKey: 'send_to_115_settings',
@@ -46,6 +46,7 @@
     wpPathId: '',
     createRandomFolder: true,
     randomFolderParentCid: '',
+    randomFolderContainerName: 'aria2',
     randomFolderPrefix: 'aria2',
     pushToAria2: false,
     aria2RpcUrl: 'http://127.0.0.1:6800/jsonrpc',
@@ -432,7 +433,6 @@
       const urls = extractLinks([
         context.text,
         context.linkHref,
-        context.pageUrl,
       ].filter(Boolean).join('\n'));
       if (!urls.length) {
         notify('发送到 115', '没有检测到可发送的链接');
@@ -568,6 +568,7 @@
       wpPathId: String(settings.wpPathId || '').trim(),
       createRandomFolder: Boolean(settings.createRandomFolder),
       randomFolderParentCid: String(settings.randomFolderParentCid || '').trim(),
+      randomFolderContainerName: String(settings.randomFolderContainerName === undefined ? DEFAULT_SETTINGS.randomFolderContainerName : settings.randomFolderContainerName).trim(),
       randomFolderPrefix: String(settings.randomFolderPrefix || 'aria2').trim() || 'aria2',
       pushToAria2: Boolean(settings.pushToAria2),
       aria2RpcUrl: aria2.url,
@@ -772,6 +773,7 @@
       pushToAria2: true,
       aria2RpcUrl: 'http://token:admin_aria2@my2.mynas.local.com:11582/jsonrpc',
       aria2DownloadDir: '',
+      randomFolderContainerName: 'aria2',
       aria2SendCookie: true,
       aria2MaxConnectionPerServer: 4,
       pollIntervalMs: 30000,
@@ -817,7 +819,7 @@
       meta.appendChild(left);
 
       const right = document.createElement('span');
-      right.textContent = item.folderName || item.wpPathId || '';
+      right.textContent = item.folderPath || item.folderName || item.wpPathId || '';
       right.title = right.textContent;
       meta.appendChild(right);
       row.appendChild(meta);
@@ -949,6 +951,7 @@
       wpPathId: job.wpPathId || '',
       watchCid: job.watchCid || '',
       folderName: job.folderName || '',
+      folderPath: job.folderPath || job.folderName || '',
       isRandomFolder: Boolean(job.isRandomFolder),
       beforeFileIds: Array.from(job.beforeFileIds || []),
     };
@@ -961,6 +964,7 @@
         wpPathId: item.wpPathId || '',
         watchCid: item.wpPathId || '',
         folderName: item.folderName || '',
+        folderPath: item.folderName || '',
         isRandomFolder: Boolean(item.folderName),
         beforeFileIds: new Set(),
       };
@@ -1206,12 +1210,13 @@
         id: historyId,
         status: 'prepared',
         folderName: job.folderName,
+        folderPath: job.folderPath,
         wpPathId: job.wpPathId,
         job: serializeJob(job),
       });
       appendHistoryLog(historyId, 'prepared job', serializeJob(job));
 
-      notify('正在发送到 115', `${uniqueUrls.length} 条链接${job.folderName ? ` -> ${job.folderName}` : ''}`);
+      notify('正在发送到 115', `${uniqueUrls.length} 条链接${job.folderPath ? ` -> ${job.folderPath}` : (job.folderName ? ` -> ${job.folderName}` : '')}`);
       const chunks = chunk(uniqueUrls, CONFIG.maxBatchSize);
       const results = [];
 
@@ -1282,12 +1287,17 @@
         wpPathId: targetCid,
         watchCid: targetCid,
         folderName: '',
+        folderPath: '',
         isRandomFolder: false,
         beforeFileIds: targetCid ? await snapshotFileIds(targetCid, settings) : new Set(),
       };
     }
 
-    const parentCid = settings.randomFolderParentCid || settings.wpPathId || '0';
+    const baseParentCid = settings.randomFolderParentCid || settings.wpPathId || '0';
+    const containerName = String(settings.randomFolderContainerName || '').trim();
+    const parentCid = containerName
+      ? await ensureFolder(baseParentCid, containerName)
+      : baseParentCid;
     const folderName = makeRandomFolderName(settings.randomFolderPrefix);
     const folderCid = await createFolder(parentCid, folderName);
 
@@ -1295,9 +1305,19 @@
       wpPathId: folderCid,
       watchCid: folderCid,
       folderName,
+      folderPath: [containerName, folderName].filter(Boolean).join('/'),
       isRandomFolder: true,
       beforeFileIds: new Set(),
     };
+  }
+
+  async function ensureFolder(parentCid, folderName) {
+    const entries = await listFiles(parentCid || '0');
+    const existing = entries
+      .map(normalizeFileEntry)
+      .find((item) => item.isDir && item.name === folderName && item.id);
+    if (existing) return existing.id;
+    return createFolder(parentCid, folderName);
   }
 
   async function addTasks(urls, wpPathId) {
