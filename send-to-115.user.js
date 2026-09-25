@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.6.1
+// @version      0.6.2
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -165,12 +165,13 @@
     }
     .send-to-115-panel button {
       border: 1px solid rgba(17, 24, 39, .16);
-      border-radius: 6px;
+      border-radius: 5px;
       background: #fff;
       color: #111827;
       cursor: pointer;
-      padding: 4px 7px;
-      font-size: 12px;
+      padding: 3px 6px;
+      font-size: 11px;
+      line-height: 1.25;
     }
     .send-to-115-panel button:hover {
       background: #f3f4f6;
@@ -190,16 +191,16 @@
     }
     .send-to-115-panel-body {
       display: grid;
-      gap: 12px;
+      gap: 10px;
       max-height: calc(min(720px, calc(100vh - 104px)) - 45px);
       overflow: auto;
-      padding: 12px;
+      padding: 10px;
     }
     .send-to-115-actions,
     .send-to-115-panel-row {
       display: flex;
       flex-wrap: wrap;
-      gap: 6px;
+      gap: 5px;
       align-items: center;
     }
     .send-to-115-actions button,
@@ -232,7 +233,7 @@
     .send-to-115-history-item {
       border: 1px solid #e5e7eb;
       border-radius: 8px;
-      padding: 9px;
+      padding: 7px;
       background: #fff;
     }
     .send-to-115-history-meta {
@@ -603,6 +604,7 @@
     const actions = document.createElement('div');
     actions.className = 'send-to-115-actions';
     appendButton(actions, '发送并推 aria2', () => sendUrls(getPanelUrls(), { pushToAria2: true }));
+    appendButton(actions, '推 aria2', () => pushLatestHistoryToAria2());
     appendButton(actions, '按配置发送', () => sendUrls(getPanelUrls()));
     appendButton(actions, '仅提交 115', () => sendUrls(getPanelUrls(), { pushToAria2: false }));
     body.appendChild(actions);
@@ -996,6 +998,15 @@
       await refreshHistoryStatus(item.id);
       await sleep(300);
     }
+  }
+
+  async function pushLatestHistoryToAria2() {
+    const item = getHistory().find((entry) => reviveJob(entry));
+    if (!item) {
+      notify('没有可推送记录', '先发送或刷新一条记录');
+      return;
+    }
+    await pushHistoryToAria2(item.id);
   }
 
   async function pushHistoryToAria2(id) {

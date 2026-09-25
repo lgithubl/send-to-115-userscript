@@ -16,6 +16,7 @@ Tampermonkey userscript for sending cloud links to 115 offline download.
 - Normal right-click opens the script menu for detected links; `Shift` + right-click keeps the native menu.
 - Recent history can manually refresh task status and keeps short diagnostic logs.
 - Recent history can manually push detected files to aria2 after refresh.
+- The top panel also has a compact `推 aria2` button for the latest tracked history item.
 
 ## Install
 
