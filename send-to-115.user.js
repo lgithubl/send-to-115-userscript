@@ -1,10 +1,12 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.7.8
+// @version      0.7.9
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
+// @updateURL    https://raw.githubusercontent.com/lgithubl/send-to-115-userscript/main/send-to-115.user.js
+// @downloadURL  https://raw.githubusercontent.com/lgithubl/send-to-115-userscript/main/send-to-115.user.js
 // @match        *://*/*
 // @run-at       document-end
 // @noframes
@@ -25,6 +27,8 @@
 
 (function () {
   'use strict';
+
+  const SCRIPT_VERSION = '0.7.9';
 
   const CONFIG = {
     settingsKey: 'send_to_115_settings',
@@ -309,6 +313,8 @@
     }
   `);
 
+  console.info(`[Send to 115] version ${SCRIPT_VERSION}`);
+
   GM_registerMenuCommand('发送到 115（按配置）', () => {
     const urls = lastContext.urls.length ? lastContext.urls : collectCurrentUrls();
     sendUrls(urls);
@@ -592,7 +598,7 @@
 
     const title = document.createElement('div');
     title.className = 'send-to-115-panel-title';
-    title.textContent = 'Send to 115';
+    title.textContent = `Send to 115 ${SCRIPT_VERSION}`;
     header.appendChild(title);
 
     const collapseButton = document.createElement('button');
