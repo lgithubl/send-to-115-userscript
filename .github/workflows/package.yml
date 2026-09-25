@@ -1,0 +1,38 @@
+name: Package
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate files
+        run: |
+          node --check send-to-115.user.js
+          node --check extension/background.js
+          node --check extension/content.js
+          node -e "JSON.parse(require('fs').readFileSync('extension/manifest.json', 'utf8'))"
+
+      - name: Build artifacts
+        run: |
+          mkdir -p dist/send-to-115-extension
+          cp extension/manifest.json extension/background.js extension/content.js dist/send-to-115-extension/
+          cp send-to-115.user.js dist/
+          cd dist/send-to-115-extension
+          zip -r ../send-to-115-extension.zip .
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: send-to-115-package
+          path: |
+            dist/send-to-115-extension.zip
+            dist/send-to-115.user.js

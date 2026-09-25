@@ -36,6 +36,13 @@ Optional bridge extension:
 
 The extension is intentionally minimal. It does not submit 115 tasks, render UI, or push aria2. It only accepts a userscript bridge request, performs the 115 `app/chrome/downurl` request in the extension background context, and returns the raw JSON response to the userscript for normal handling.
 
+Packaged downloads:
+
+1. Open the repository's `Actions` tab.
+2. Run or open the latest `Package` workflow.
+3. Download the `send-to-115-package` artifact.
+4. Unzip `send-to-115-extension.zip`, then load the unzipped folder in `chrome://extensions`.
+
 ## Usage
 
 1. Log in to 115 in the same browser profile.
