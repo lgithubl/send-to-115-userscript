@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.5.1
+// @version      0.6.0
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -111,6 +111,38 @@
       display: block;
       color: #d1d5db;
       overflow-wrap: anywhere;
+    }
+    .send-to-115-context-menu {
+      position: fixed;
+      z-index: 2147483647;
+      min-width: 168px;
+      padding: 6px;
+      border: 1px solid rgba(17, 24, 39, .16);
+      border-radius: 8px;
+      background: #fff;
+      box-shadow: 0 14px 34px rgba(15, 23, 42, .22);
+      color: #111827;
+      font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .send-to-115-context-menu button {
+      display: block;
+      width: 100%;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: inherit;
+      cursor: pointer;
+      padding: 7px 9px;
+      text-align: left;
+      font: inherit;
+    }
+    .send-to-115-context-menu button:hover {
+      background: #f3f4f6;
+    }
+    .send-to-115-context-menu small {
+      display: block;
+      padding: 4px 9px 6px;
+      color: #6b7280;
     }
     .send-to-115-panel {
       position: fixed;
@@ -308,7 +340,15 @@
       urls,
       text: getSelectionText() || getLinkHref(event.target) || '',
     };
+
+    if (event.shiftKey || !urls.length) return;
+    event.preventDefault();
+    showContextMenu(event.clientX, event.clientY, urls);
   }, true);
+
+  document.addEventListener('click', hideContextMenu);
+  window.addEventListener('blur', hideContextMenu);
+  window.addEventListener('scroll', hideContextMenu, true);
 
   document.addEventListener('keydown', (event) => {
     if (!event.altKey || !event.shiftKey || event.key !== '1') return;
@@ -381,6 +421,42 @@
   function getLinkText(target) {
     const link = target && target.closest ? target.closest('a[href]') : null;
     return link ? link.textContent.trim() : '';
+  }
+
+  function showContextMenu(x, y, urls) {
+    hideContextMenu();
+
+    const menu = document.createElement('div');
+    menu.className = 'send-to-115-context-menu';
+    appendContextMenuButton(menu, '按配置发送到 115', () => sendUrls(urls));
+    appendContextMenuButton(menu, '发送并推 aria2', () => sendUrls(urls, { pushToAria2: true }));
+    appendContextMenuButton(menu, '仅提交 115', () => sendUrls(urls, { pushToAria2: false }));
+
+    const hint = document.createElement('small');
+    hint.textContent = `${urls.length} 条链接 · Shift+右键原菜单`;
+    menu.appendChild(hint);
+
+    document.documentElement.appendChild(menu);
+    const rect = menu.getBoundingClientRect();
+    menu.style.left = `${Math.min(x, window.innerWidth - rect.width - 8)}px`;
+    menu.style.top = `${Math.min(y, window.innerHeight - rect.height - 8)}px`;
+  }
+
+  function appendContextMenuButton(parent, label, onClick) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = label;
+    button.addEventListener('click', (event) => {
+      event.stopPropagation();
+      hideContextMenu();
+      onClick();
+    });
+    parent.appendChild(button);
+  }
+
+  function hideContextMenu() {
+    const menu = document.querySelector('.send-to-115-context-menu');
+    if (menu) menu.remove();
   }
 
   function getSettings() {
@@ -569,6 +645,7 @@
 
     const historyActions = document.createElement('div');
     historyActions.className = 'send-to-115-panel-row';
+    appendButton(historyActions, '刷新全部状态', () => refreshAllHistoryStatuses());
     appendButton(historyActions, '清空列表', () => {
       GM_setValue(CONFIG.historyKey, []);
       renderPanel();
@@ -662,6 +739,7 @@
       status.title = [
         item.status || 'unknown',
         item.pushedCount ? `pushed ${item.pushedCount}` : '',
+        item.detail || '',
         item.error || '',
       ].filter(Boolean).join('\n');
       row.appendChild(status);
@@ -672,16 +750,19 @@
       url.title = (item.urls || []).join('\n');
       row.appendChild(url);
 
-      if (item.error) {
+      const logText = Array.isArray(item.log) ? item.log.join('\n') : '';
+      const detailText = item.error || item.detail || (Array.isArray(item.log) ? item.log[0] : '');
+      if (detailText || logText) {
         const detail = document.createElement('div');
         detail.className = 'send-to-115-history-detail';
-        detail.textContent = item.error;
-        detail.title = item.error;
+        detail.textContent = detailText;
+        detail.title = [item.error || item.detail || '', logText].filter(Boolean).join('\n\n');
         row.appendChild(detail);
       }
 
       const controls = document.createElement('div');
       controls.className = 'send-to-115-panel-row';
+      appendButton(controls, '刷新状态', () => refreshHistoryStatus(item.id));
       appendButton(controls, '重发', () => sendUrls(item.urls, item.overrides || {}));
       appendButton(controls, '重发并推 aria2', () => sendUrls(item.urls, { ...(item.overrides || {}), pushToAria2: true }));
       appendButton(controls, '仅提交 115', () => sendUrls(item.urls, { ...(item.overrides || {}), pushToAria2: false }));
@@ -713,6 +794,10 @@
       wpPathId: '',
       pushedCount: 0,
       error: '',
+      detail: '',
+      log: [],
+      job: null,
+      matcher: null,
       overrides: {
         pushToAria2: Boolean(settings.pushToAria2),
         ...(overrides || {}),
@@ -742,6 +827,175 @@
     if (!panelCollapsed) renderPanel();
   }
 
+  function appendHistoryLog(id, message, data) {
+    const history = getHistory();
+    const item = history.find((entry) => entry.id === id);
+    if (!item) return;
+
+    const line = `[${formatTime(Date.now())}] ${message}${data ? ` ${safeStringify(data, 360)}` : ''}`;
+    item.log = [line, ...(Array.isArray(item.log) ? item.log : [])].slice(0, 30);
+    item.updatedAt = Date.now();
+    GM_setValue(CONFIG.historyKey, history);
+    console.info('[Send to 115]', message, data || '');
+    if (!panelCollapsed) renderPanel();
+  }
+
+  function safeStringify(value, maxLength) {
+    let text = '';
+    try {
+      text = JSON.stringify(value);
+    } catch (error) {
+      text = String(value);
+    }
+    return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
+  }
+
+  function serializeJob(job) {
+    return {
+      wpPathId: job.wpPathId || '',
+      watchCid: job.watchCid || '',
+      folderName: job.folderName || '',
+      isRandomFolder: Boolean(job.isRandomFolder),
+      beforeFileIds: Array.from(job.beforeFileIds || []),
+    };
+  }
+
+  function reviveJob(item) {
+    if (!item) return null;
+    if (!item.job && (item.wpPathId || item.folderName)) {
+      return {
+        wpPathId: item.wpPathId || '',
+        watchCid: item.wpPathId || '',
+        folderName: item.folderName || '',
+        isRandomFolder: Boolean(item.folderName),
+        beforeFileIds: new Set(),
+      };
+    }
+    if (!item.job) return null;
+    return {
+      ...item.job,
+      beforeFileIds: new Set(item.job.beforeFileIds || []),
+    };
+  }
+
+  function serializeMatcher(matcher) {
+    return {
+      ids: Array.from(matcher.ids || []),
+      hashes: Array.from(matcher.hashes || []),
+      urls: Array.from(matcher.urls || []),
+      cids: Array.from(matcher.cids || []),
+    };
+  }
+
+  function reviveMatcher(item) {
+    if (!item) return null;
+    if (!item.matcher) {
+      return {
+        ids: new Set(),
+        hashes: new Set(),
+        urls: new Set((item.urls || []).map(normalizeComparableUrl)),
+        cids: new Set([item.wpPathId || ''].filter(Boolean)),
+      };
+    }
+    return {
+      ids: new Set(item.matcher.ids || []),
+      hashes: new Set(item.matcher.hashes || []),
+      urls: new Set(item.matcher.urls || []),
+      cids: new Set(item.matcher.cids || []),
+    };
+  }
+
+  function summarizeAddTaskResponse(response) {
+    return {
+      state: response && response.state,
+      msg: response && (response.error_msg || response.msg || response.err_msg || ''),
+      ids: collectValuesByKey(response, /^(task_id|tid|id)$/i).slice(0, 5),
+      hashes: collectValuesByKey(response, /hash/i).slice(0, 5),
+    };
+  }
+
+  function collectValuesByKey(value, pattern) {
+    const values = [];
+    visitObjects(value, (item) => {
+      for (const [key, raw] of Object.entries(item)) {
+        if (!pattern.test(key)) continue;
+        if (raw === undefined || raw === null || typeof raw === 'object') continue;
+        const text = String(raw).trim();
+        if (text) values.push(text);
+      }
+    });
+    return Array.from(new Set(values));
+  }
+
+  async function refreshHistoryStatus(id) {
+    const item = getHistory().find((entry) => entry.id === id);
+    if (!item) {
+      notify('刷新失败', '找不到历史记录');
+      return;
+    }
+
+    const job = reviveJob(item);
+    const matcher = reviveMatcher(item);
+    if (!job || !matcher) {
+      upsertHistoryItem({
+        id,
+        status: 'no tracking data',
+        error: '这条记录没有保存 job/matcher，无法刷新；重发一次后可跟踪。',
+      });
+      return;
+    }
+
+    try {
+      upsertHistoryItem({ id, status: 'refreshing', error: '', detail: '' });
+      appendHistoryLog(id, 'manual refresh started');
+
+      const tasks = await listOfflineTasks();
+      const matched = tasks.filter((task) => matchOfflineTask(task, matcher, job));
+      const done = matched.filter(isOfflineTaskDone);
+      const failed = matched.filter(isOfflineTaskFailed);
+      const files = await listDownloadableFiles(job.watchCid || job.wpPathId || '0', getSettings());
+      const newFiles = files.filter((file) => !job.beforeFileIds.has(file.id));
+      const status = matched.length
+        ? `offline ${done.length}/${matched.length}${failed.length ? ` failed ${failed.length}` : ''} · files ${newFiles.length}`
+        : `no task match · files ${newFiles.length}`;
+
+      upsertHistoryItem({
+        id,
+        status,
+        detail: describeOfflineTasks(matched),
+      });
+      appendHistoryLog(id, 'manual refresh result', {
+        tasks: tasks.length,
+        matched: matched.length,
+        done: done.length,
+        failed: failed.length,
+        files: newFiles.length,
+      });
+      notify('状态已刷新', status);
+    } catch (error) {
+      upsertHistoryItem({
+        id,
+        status: 'refresh failed',
+        error: error.message || String(error),
+      });
+      appendHistoryLog(id, 'manual refresh failed', error.message || String(error));
+      notify('刷新状态失败', error.message || String(error));
+    }
+  }
+
+  async function refreshAllHistoryStatuses() {
+    const history = getHistory().filter((item) => reviveJob(item) && reviveMatcher(item));
+    if (!history.length) {
+      notify('没有可刷新的记录', '重发一次后会保存跟踪信息');
+      return;
+    }
+
+    for (const item of history) {
+      await refreshHistoryStatus(item.id);
+      await sleep(300);
+    }
+  }
+
   function formatTime(value) {
     if (!value) return '';
     const date = new Date(value);
@@ -764,6 +1018,11 @@
       ...overrides,
     };
     const historyId = createHistoryItem(uniqueUrls, settings, overrides);
+    appendHistoryLog(historyId, 'created', {
+      urls: uniqueUrls.length,
+      pushToAria2: settings.pushToAria2,
+      waitOfflineTaskStatus: settings.waitOfflineTaskStatus,
+    });
 
     try {
       const job = await prepareJob(settings);
@@ -772,7 +1031,9 @@
         status: 'prepared',
         folderName: job.folderName,
         wpPathId: job.wpPathId,
+        job: serializeJob(job),
       });
+      appendHistoryLog(historyId, 'prepared job', serializeJob(job));
 
       notify('正在发送到 115', `${uniqueUrls.length} 条链接${job.folderName ? ` -> ${job.folderName}` : ''}`);
       const chunks = chunk(uniqueUrls, CONFIG.maxBatchSize);
@@ -783,6 +1044,7 @@
           urls: urlsChunk,
           response: await addTasks(urlsChunk, job.wpPathId),
         });
+        appendHistoryLog(historyId, 'add_task_urls response', summarizeAddTaskResponse(results[results.length - 1].response));
       }
 
       const failed = results.map((item) => item.response).filter((item) => !item.state);
@@ -792,11 +1054,16 @@
       }
 
       const matcher = buildOfflineTaskMatcher(results, uniqueUrls, job);
+      upsertHistoryItem({
+        id: historyId,
+        matcher: serializeMatcher(matcher),
+      });
+      appendHistoryLog(historyId, 'matcher built', serializeMatcher(matcher));
 
       if (!settings.pushToAria2) {
         upsertHistoryItem({
           id: historyId,
-          status: '115 added',
+          status: '115 added (not watching)',
         });
         notify('115 离线任务已添加', `${uniqueUrls.length} 条链接`);
         return;
@@ -807,11 +1074,13 @@
         status: 'waiting',
       });
       const waitResult = await waitForOfflineOrDirectory(job, settings, matcher, historyId);
+      appendHistoryLog(historyId, 'wait finished', waitResult.usedOfflineStatus ? 'offline status' : 'directory stable');
       upsertHistoryItem({
         id: historyId,
         status: waitResult.usedOfflineStatus ? 'offline done' : 'directory stable',
       });
       const files = await getFilesReadyForPush(job, settings, historyId, waitResult);
+      appendHistoryLog(historyId, 'files ready', files.map((file) => ({ id: file.id, name: file.name, size: file.size })));
       const pushed = await pushFilesToAria2(files, settings);
       upsertHistoryItem({
         id: historyId,
@@ -949,7 +1218,14 @@
       upsertHistoryItem({
         id: historyId,
         status: statusText,
-        error: describeOfflineTasks(matched),
+        detail: describeOfflineTasks(matched),
+      });
+      appendHistoryLog(historyId, 'offline poll', {
+        tasks: tasks.length,
+        matched: matched.length,
+        done: done.length,
+        failed: failed.length,
+        noMatchRounds,
       });
       notify('等待 115 离线任务完成', statusText);
 
@@ -1161,6 +1437,10 @@
 
       const status = `directory ${newFiles.length} files stable ${stableCount}/${settings.stableRounds}`;
       if (historyId) upsertHistoryItem({ id: historyId, status });
+      if (historyId) appendHistoryLog(historyId, 'directory poll', {
+        files: newFiles.length,
+        stableCount,
+      });
       notify('等待 115 离线完成', `${newFiles.length} 个文件，稳定 ${stableCount}/${settings.stableRounds}`);
 
       if (newFiles.length && stableCount >= Number(settings.stableRounds)) {

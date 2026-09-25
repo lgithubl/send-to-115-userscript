@@ -13,6 +13,8 @@ Tampermonkey userscript for sending cloud links to 115 offline download.
 - Optional random 115 folder per batch, polling completion, and pushing completed files to aria2 RPC.
 - Floating panel with settings, recent send history, and resend actions.
 - Recent history shows a separate status badge; long links are truncated and available on hover.
+- Normal right-click opens the script menu for detected links; `Shift` + right-click keeps the native menu.
+- Recent history can manually refresh task status and keeps short diagnostic logs.
 
 ## Install
 
@@ -22,9 +24,10 @@ Open `send-to-115.user.js` with Tampermonkey, or use the raw GitHub URL after pu
 
 1. Log in to 115 in the same browser profile.
 2. On any page, select text containing links, or right-click a link/text block once.
-3. Open the Tampermonkey menu and click `发送到 115（按配置）`.
+3. Use the script's right-click menu, or open the Tampermonkey menu and click `发送到 115（按配置）`.
 4. To wait for completion and push files to aria2, click `发送到 115，完成后推送 aria2`.
 5. Click the collapsed floating `115` button for configuration, recent history, and resend actions.
+6. Hold `Shift` while right-clicking to show the page/browser native context menu.
 
 Pure userscripts cannot add a top-level item directly into Chrome's native context menu. This script records the right-clicked content without replacing the native menu, then exposes the send action through Tampermonkey's userscript menu.
 
