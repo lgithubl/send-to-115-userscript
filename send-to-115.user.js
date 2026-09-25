@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.7.0
+// @version      0.7.1
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -1705,7 +1705,7 @@
   }
 
   async function getChromeDownloadUrl(file) {
-    const time = Date.now();
+    const time = Math.floor(Date.now() / 1000);
     const encoded = m115Encode(JSON.stringify({ pickcode: file.pickcode }), time);
     const response = await request({
       method: 'POST',
@@ -1727,6 +1727,7 @@
       decoded,
       directUrl: downloadUrl,
     });
+    console.info('[Send to 115] 115 chrome downurl decoded JSON', safeStringify(decoded, 4000));
 
     if (!downloadUrl) {
       const error = new Error(findErrorMessage(decoded) || findErrorMessage(json) || `chrome downurl 获取下载链接失败：${file.name || file.pickcode}`);
