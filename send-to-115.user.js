@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.7.6
+// @version      0.7.7
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -20,6 +20,7 @@
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
 // @grant        GM_registerMenuCommand
+// @grant        GM_cookie
 // ==/UserScript==
 
 (function () {
@@ -53,6 +54,7 @@
     includeSubfolders: true,
     waitOfflineTaskStatus: true,
     allowZeroSizeFiles: false,
+    useBrowserCookieHeader: true,
   };
 
   const API = {
@@ -79,7 +81,6 @@
     },
     categoryGet: (cid) => `https://webapi.115.com/category/get?aid=1&cid=${encodeURIComponent(cid)}`,
     download: (pickcode) => `https://webapi.115.com/files/download?pickcode=${encodeURIComponent(pickcode)}&_=${Date.now()}`,
-    proapiRoot: () => `https://proapi.115.com/?_=${Date.now()}`,
     chromeDownurl: (time) => `https://proapi.115.com/app/chrome/downurl?t=${time}`,
     addMany: 'https://115.com/web/lixian/?ct=lixian&ac=add_task_urls',
     taskList: 'https://115.com/web/lixian/?ct=lixian&ac=task_lists',
@@ -517,6 +518,7 @@
       includeSubfolders: Boolean(settings.includeSubfolders),
       waitOfflineTaskStatus: settings.waitOfflineTaskStatus !== false,
       allowZeroSizeFiles: Boolean(settings.allowZeroSizeFiles),
+      useBrowserCookieHeader: settings.useBrowserCookieHeader !== false,
     };
   }
 
@@ -705,6 +707,7 @@
       stableRounds: 2,
       waitOfflineTaskStatus: true,
       allowZeroSizeFiles: false,
+      useBrowserCookieHeader: true,
     });
   }
 
@@ -1596,7 +1599,7 @@
 
       try {
         const enrichedFile = await enrichFileFromCategory(file);
-        const download = await getDownloadUrl(enrichedFile);
+        const download = await getDownloadUrl(enrichedFile, settings);
         enrichedFile.readyDownload = download;
         readyFiles.push(enrichedFile);
         if (historyId) appendHistoryLog(historyId, 'pending file direct url ready', {
@@ -1762,21 +1765,6 @@
     return Math.round(amount * (units[match[2].toLowerCase()] || 1));
   }
 
-  function summarizeResponseHeaders(headersText) {
-    const summary = {};
-    String(headersText || '').split(/\r?\n/).forEach((line) => {
-      const index = line.indexOf(':');
-      if (index === -1) return;
-      const key = line.slice(0, index).trim().toLowerCase();
-      const value = line.slice(index + 1).trim();
-      if (!key) return;
-      if (/^(set-cookie|content-type|location|date|server|x-|cf-|cache-control)$/i.test(key) || key.startsWith('x-')) {
-        summary[key] = key === 'set-cookie' ? value.replace(/=.*/, '=<redacted>') : value;
-      }
-    });
-    return summary;
-  }
-
   async function pushFilesToAria2(files, settings, historyId) {
     const pushed = [];
     for (const file of files) {
@@ -1809,7 +1797,7 @@
     while (Date.now() - startedAt < Number(settings.pollTimeoutMs)) {
       attempts += 1;
       try {
-        const download = await getDownloadUrl(file);
+        const download = await getDownloadUrl(file, settings);
         if (historyId) appendHistoryLog(historyId, 'download url ready', {
           name: file.name,
           attempts,
@@ -1844,9 +1832,9 @@
     throw new Error(`等待 115 文件可下载超时：${file.name || file.pickcode}`);
   }
 
-  async function getDownloadUrl(file) {
+  async function getDownloadUrl(file, settings) {
     try {
-      return await getChromeDownloadUrl(file);
+      return await getChromeDownloadUrl(file, settings);
     } catch (error) {
       console.warn('[Send to 115] chrome downurl failed, fallback webapi', error);
     }
@@ -1878,16 +1866,21 @@
     return { url: downloadUrl, response: json };
   }
 
-  async function getChromeDownloadUrl(file) {
+  async function getChromeDownloadUrl(file, settings) {
     const time = Math.floor(Date.now() / 1000);
     const encoded = m115Encode(JSON.stringify({ pickcode: file.pickcode }), time);
-    await warmupProapi(file);
+    const cookieHeader = settings && settings.useBrowserCookieHeader
+      ? await getCookieHeader('https://proapi.115.com/')
+      : '';
+    const cookieNames = getCookieNames(cookieHeader);
     logJson('115 chrome downurl request', {
       file: summarizeDownloadFile(file),
       time,
       url: API.chromeDownurl(time),
       payload: { pickcode: file.pickcode },
       dataLength: encoded.data.length,
+      cookieNames,
+      cookieHeaderEnabled: Boolean(cookieHeader),
     });
     const response = await request({
       method: 'POST',
@@ -1898,6 +1891,7 @@
         'Content-Type': 'application/x-www-form-urlencoded',
         'Origin': 'https://115.com',
         'Referer': 'https://115.com/',
+        ...(cookieHeader ? { 'Cookie': cookieHeader } : {}),
       },
     });
     const json = parseJson(response.responseText);
@@ -1939,34 +1933,6 @@
     };
   }
 
-  let proapiWarmedAt = 0;
-
-  async function warmupProapi(file) {
-    if (Date.now() - proapiWarmedAt < 60000) return;
-    try {
-      const response = await request({
-        method: 'GET',
-        url: API.proapiRoot(),
-        headers: {
-          'Accept': '*/*',
-          'Referer': 'https://115.com/',
-        },
-      });
-      proapiWarmedAt = Date.now();
-      logJson('115 proapi warmup response', {
-        file: summarizeDownloadFile(file),
-        status: response.status,
-        finalUrl: response.finalUrl || '',
-        headers: summarizeResponseHeaders(response.responseHeaders),
-      });
-    } catch (error) {
-      logJson('115 proapi warmup failed', {
-        file: summarizeDownloadFile(file),
-        error: error.message || String(error),
-      });
-    }
-  }
-
   function summarizeDownloadFile(file) {
     return {
       id: file && file.id,
@@ -1975,6 +1941,47 @@
       size: file && file.size,
       raw: file && file.raw,
     };
+  }
+
+  async function getCookieHeader(url) {
+    if (typeof GM_cookie === 'undefined' || !GM_cookie || typeof GM_cookie.list !== 'function') {
+      logJson('browser cookie header unavailable', { url, reason: 'GM_cookie unavailable' });
+      return '';
+    }
+
+    return new Promise((resolve) => {
+      try {
+        GM_cookie.list({ url }, (cookies, error) => {
+          if (error) {
+            logJson('browser cookie header unavailable', { url, error: error.message || String(error) });
+            resolve('');
+            return;
+          }
+
+          const items = Array.isArray(cookies) ? cookies : [];
+          const header = items
+            .filter((cookie) => cookie && cookie.name && cookie.value !== undefined)
+            .map((cookie) => `${cookie.name}=${cookie.value}`)
+            .join('; ');
+          logJson('browser cookie header loaded', {
+            url,
+            cookieNames: items.map((cookie) => cookie.name).filter(Boolean),
+            count: items.length,
+          });
+          resolve(header);
+        });
+      } catch (error) {
+        logJson('browser cookie header unavailable', { url, error: error.message || String(error) });
+        resolve('');
+      }
+    });
+  }
+
+  function getCookieNames(header) {
+    return String(header || '')
+      .split(';')
+      .map((part) => part.split('=')[0].trim())
+      .filter(Boolean);
   }
 
   function getChromeDownloadItem(decoded) {
