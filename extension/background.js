@@ -41,23 +41,69 @@ async function chromeDownurl(payload) {
   }
 
   const cookieDiagnostics = await getCookieDiagnostics();
+  const attempts = [];
+  const exporterResult = await exporterStyleDownurl(payload);
+  attempts.push(summarizeAttempt('115exporter-background', exporterResult));
+  if (exporterResult && exporterResult.ok && exporterResult.response) {
+    return {
+      ...exporterResult,
+      source: '115exporter-background',
+      cookieNames: cookieDiagnostics.cookieNames,
+      cookieDiagnostics,
+      attempts,
+    };
+  }
+
   const tabResult = await try115TabDownurl(payload);
+  attempts.push(summarizeAttempt('115-tab', tabResult));
   if (tabResult && tabResult.ok && tabResult.response) {
     return {
       ...tabResult,
       source: '115-tab',
       cookieNames: cookieDiagnostics.cookieNames,
       cookieDiagnostics,
+      attempts,
     };
   }
 
   const backgroundResult = await backgroundDownurl(payload);
+  attempts.push(summarizeAttempt('background', backgroundResult));
   return {
     ...backgroundResult,
     source: 'background',
     cookieNames: cookieDiagnostics.cookieNames,
     cookieDiagnostics,
+    attempts,
     tabError: tabResult && tabResult.error,
+  };
+}
+
+async function exporterStyleDownurl(payload) {
+  const response = await fetch(payload.url, {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: `data=${encodeURIComponent(payload.data)}`,
+  });
+
+  const text = await response.text();
+  let json = null;
+  try {
+    json = JSON.parse(text);
+  } catch (error) {
+    return {
+      ok: false,
+      status: response.status,
+      error: `115Exporter-style response is not JSON: ${text.slice(0, 120)}`,
+    };
+  }
+
+  return {
+    ok: response.ok,
+    status: response.status,
+    response: json,
   };
 }
 
@@ -88,6 +134,18 @@ async function backgroundDownurl(payload) {
     ok: response.ok,
     status: response.status,
     response: json,
+  };
+}
+
+function summarizeAttempt(source, result) {
+  return {
+    source,
+    ok: Boolean(result && result.ok),
+    status: result && result.status,
+    error: result && result.error,
+    state: result && result.response && result.response.state,
+    errno: result && result.response && result.response.errno,
+    hasData: Boolean(result && result.response && result.response.data),
   };
 }
 
