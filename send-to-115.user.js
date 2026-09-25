@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.8.9
+// @version      0.8.10
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -16,6 +16,7 @@
 // @connect      webapi.115.com
 // @connect      localhost
 // @connect      127.0.0.1
+// @connect      my2.mynas.local.com
 // @connect      *
 // @grant        GM_addStyle
 // @grant        GM_getValue
@@ -29,7 +30,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.8.9';
+  const SCRIPT_VERSION = '0.8.10';
 
   const CONFIG = {
     settingsKey: 'send_to_115_settings',
@@ -1079,12 +1080,18 @@
 
     try {
       const settings = getSettings();
+      const manualPushSettings = {
+        ...settings,
+        stableRounds: 1,
+      };
       upsertHistoryItem({ id, status: 'pushing aria2', error: '' });
-      appendHistoryLog(id, 'manual aria2 push started');
+      appendHistoryLog(id, 'manual aria2 push started', {
+        stableRounds: manualPushSettings.stableRounds,
+      });
 
       const newFiles = await waitForCompletedFiles(
         { ...job, watchCid: job.watchCid || job.wpPathId || '0' },
-        settings,
+        manualPushSettings,
         id,
       );
       if (!newFiles.length) {
@@ -1095,9 +1102,9 @@
         id: file.id,
         name: file.name,
         size: file.size,
-        ready: !isPendingFile(file, settings),
+        ready: !isPendingFile(file, manualPushSettings),
       })));
-      const pushed = await pushFilesToAria2(newFiles, settings, id);
+      const pushed = await pushFilesToAria2(newFiles, manualPushSettings, id);
       upsertHistoryItem({
         id,
         status: 'pushed',
