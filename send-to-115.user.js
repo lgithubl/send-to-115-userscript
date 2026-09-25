@@ -429,8 +429,8 @@
 
     const menu = document.createElement('div');
     menu.className = 'send-to-115-context-menu';
-    appendContextMenuButton(menu, '按配置发送到 115', () => sendUrls(urls));
     appendContextMenuButton(menu, '发送并推 aria2', () => sendUrls(urls, { pushToAria2: true }));
+    appendContextMenuButton(menu, '按配置发送到 115', () => sendUrls(urls));
     appendContextMenuButton(menu, '仅提交 115', () => sendUrls(urls, { pushToAria2: false }));
 
     const hint = document.createElement('small');
@@ -602,9 +602,9 @@
 
     const actions = document.createElement('div');
     actions.className = 'send-to-115-actions';
+    appendButton(actions, '发送并推 aria2', () => sendUrls(getPanelUrls(), { pushToAria2: true }));
     appendButton(actions, '按配置发送', () => sendUrls(getPanelUrls()));
     appendButton(actions, '仅提交 115', () => sendUrls(getPanelUrls(), { pushToAria2: false }));
-    appendButton(actions, '发送并推 aria2', () => sendUrls(getPanelUrls(), { pushToAria2: true }));
     body.appendChild(actions);
 
     const configSection = document.createElement('section');
