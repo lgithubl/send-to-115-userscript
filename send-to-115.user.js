@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.8.17
+// @version      0.8.20
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -30,7 +30,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.8.17';
+  const SCRIPT_VERSION = '0.8.20';
 
   const CONFIG = {
     settingsKey: 'send_to_115_settings',
@@ -320,6 +320,9 @@
       font-weight: 700;
       box-shadow: 0 12px 32px rgba(15, 23, 42, .18);
     }
+    .send-to-115-mikan-button {
+      margin-left: 6px;
+    }
   `);
 
   console.info(`[Send to 115] version ${SCRIPT_VERSION}`);
@@ -366,6 +369,7 @@
 
   initPanel();
   installMangaContextMenuBridge();
+  installMikanButtons();
 
   document.addEventListener('contextmenu', (event) => {
     const urls = collectEventUrls(event);
@@ -446,6 +450,146 @@
     });
     register();
     window.setTimeout(register, 1000);
+  }
+
+  function installMikanButtons() {
+    if (!isMikanHost()) {
+      debugLog('mikan buttons skipped: host not matched', location.hostname);
+      return;
+    }
+
+    debugLog('mikan buttons install start', location.href);
+
+    injectMikanButtons();
+
+    const observer = new MutationObserver(() => injectMikanButtons());
+    observer.observe(document.body, { childList: true, subtree: true });
+  }
+
+  function isMikanHost() {
+    return location.hostname === 'mikanani.me' || location.hostname.endsWith('.mikanani.me');
+  }
+
+  function injectMikanButtons() {
+    const copyLinks = document.querySelectorAll('.js-magnet[data-clipboard-text]');
+    const episodeTables = document.querySelectorAll('.episode-table');
+    const copySelectedButtons = document.querySelectorAll('.episode-table .js-copy-selected');
+    let insertedSingle = 0;
+    let insertedBatch = 0;
+
+    copyLinks.forEach((copyLink) => {
+      if (copyLink.dataset.sendTo115Injected === '1') return;
+      copyLink.dataset.sendTo115Injected = '1';
+
+      const button = createMikanButton('发送115', () => {
+        const urls = extractLinks(copyLink.getAttribute('data-clipboard-text') || '');
+        if (!urls.length) {
+          notify('发送到 115', '未找到磁链');
+          return;
+        }
+        sendUrls(urls);
+      });
+      copyLink.insertAdjacentElement('afterend', button);
+      insertedSingle += 1;
+    });
+
+    episodeTables.forEach((table) => {
+      if (table.dataset.sendTo115BatchInjected === '1') {
+        updateMikanBatchButton(table);
+        return;
+      }
+
+      const copySelected = table.querySelector('.js-copy-selected');
+      if (!copySelected) return;
+
+      table.dataset.sendTo115BatchInjected = '1';
+      const button = createMikanButton('发送选中到115', () => {
+        const urls = getMikanSelectedMagnets(table);
+        if (!urls.length) {
+          notify('发送到 115', '请先勾选要发送的条目');
+          return;
+        }
+        const aria2SubDir = getMikanBatchAria2SubDir(table);
+        sendUrls(urls, aria2SubDir ? { aria2SubDir } : {});
+      });
+      button.classList.add('send-to-115-mikan-batch');
+      copySelected.insertAdjacentElement('afterend', button);
+      insertedBatch += 1;
+
+      table.addEventListener('change', () => updateMikanBatchButton(table));
+      updateMikanBatchButton(table);
+    });
+
+    debugLog('mikan buttons scan', {
+      copyLinks: copyLinks.length,
+      episodeTables: episodeTables.length,
+      copySelectedButtons: copySelectedButtons.length,
+      insertedSingle,
+      insertedBatch,
+    });
+  }
+
+  function createMikanButton(label, onClick) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'btn btn-default btn-xs send-to-115-mikan-button';
+    button.textContent = label;
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      onClick();
+    });
+    return button;
+  }
+
+  function getMikanSelectedMagnets(table) {
+    return Array.from(table.querySelectorAll('.js-episode-select:checked[data-magnet]'))
+      .flatMap((checkbox) => extractLinks(checkbox.getAttribute('data-magnet') || ''))
+      .filter(Boolean)
+      .filter((url, index, urls) => urls.indexOf(url) === index);
+  }
+
+  function updateMikanBatchButton(table) {
+    const button = table.querySelector('.send-to-115-mikan-batch');
+    if (!button) return;
+    button.disabled = getMikanSelectedMagnets(table).length === 0;
+  }
+
+  function getMikanBatchAria2SubDir(table) {
+    const bangumiName = getMikanBangumiName();
+    const subgroupName = getMikanSubgroupName(table);
+    return [bangumiName, subgroupName]
+      .filter(Boolean)
+      .map(sanitizeAria2PathSegment)
+      .join('/');
+  }
+
+  function getMikanBangumiName() {
+    const title = document.querySelector('.bangumi-title');
+    if (title) {
+      const cloned = title.cloneNode(true);
+      cloned.querySelectorAll('a, i').forEach((node) => node.remove());
+      const text = cloned.textContent.trim();
+      if (text) return text;
+    }
+
+    return document.title
+      .replace(/^Mikan Project\s*-\s*/i, '')
+      .replace(/\s*-\s*Mikan Project$/i, '')
+      .trim();
+  }
+
+  function getMikanSubgroupName(table) {
+    let cursor = table.previousElementSibling;
+    while (cursor) {
+      if (cursor.classList && cursor.classList.contains('subgroup-text')) {
+        const link = cursor.querySelector('a[href*="/Home/PublishGroup/"]');
+        const text = link ? link.textContent.trim() : cursor.textContent.trim();
+        if (text) return text;
+      }
+      cursor = cursor.previousElementSibling;
+    }
+    return '';
   }
 
   function extractLinks(text) {
@@ -728,6 +872,7 @@
     const historyActions = document.createElement('div');
     historyActions.className = 'send-to-115-panel-row';
     appendButton(historyActions, '刷新全部状态', () => refreshAllHistoryStatuses());
+    appendButton(historyActions, '清空已推送', () => clearPushedHistoryItems());
     appendButton(historyActions, '清空列表', () => {
       GM_setValue(CONFIG.historyKey, []);
       renderPanel();
@@ -858,6 +1003,7 @@
       appendButton(controls, '重发', () => sendUrls(item.urls, item.overrides || {}));
       appendButton(controls, '重发并推 aria2', () => sendUrls(item.urls, { ...(item.overrides || {}), pushToAria2: true }));
       appendButton(controls, '仅提交 115', () => sendUrls(item.urls, { ...(item.overrides || {}), pushToAria2: false }));
+      appendButton(controls, '删除', () => deleteHistoryItem(item.id));
       row.appendChild(controls);
 
       container.appendChild(row);
@@ -873,6 +1019,25 @@
   function getHistory() {
     const saved = GM_getValue(CONFIG.historyKey, []);
     return Array.isArray(saved) ? saved : safeJsonParse(saved, []);
+  }
+
+  function setHistory(history) {
+    GM_setValue(CONFIG.historyKey, history.slice(0, CONFIG.maxHistoryItems));
+    if (!panelCollapsed) renderPanel();
+  }
+
+  function deleteHistoryItem(id) {
+    const before = getHistory();
+    const after = before.filter((item) => item.id !== id);
+    setHistory(after);
+    notify('已删除历史记录', '只清理本地列表，不影响 115 任务');
+  }
+
+  function clearPushedHistoryItems() {
+    const before = getHistory();
+    const after = before.filter((item) => item.status !== 'pushed');
+    setHistory(after);
+    notify('已清空已推送记录', `删除 ${before.length - after.length} 条本地历史`);
   }
 
   function createHistoryItem(urls, settings, overrides) {
@@ -934,6 +1099,10 @@
 
   function logJson(label, value, maxLength = 12000) {
     console.info(`[Send to 115 JSON] ${label} ${safeStringify(value, maxLength)}`);
+  }
+
+  function debugLog(message, data) {
+    console.info('[Send to 115]', message, data || '');
   }
 
   function safeStringify(value, maxLength) {
@@ -1133,6 +1302,7 @@
       const settings = getSettings();
       const manualPushSettings = {
         ...settings,
+        ...(item.overrides || {}),
         stableRounds: 1,
       };
       upsertHistoryItem({ id, status: 'pushing aria2', error: '' });
@@ -2813,7 +2983,7 @@
   function buildAria2Options(file, settings) {
     const options = parseAria2Options(settings.aria2ExtraOptionsJson);
     if (settings.aria2DownloadDir && !options.dir) {
-      options.dir = joinAria2Dir(settings.aria2DownloadDir, file.relativeDir);
+      options.dir = joinAria2Dir(settings.aria2DownloadDir, joinRelativeAria2Dir(settings.aria2SubDir, file.relativeDir));
     }
     if (!options.dir) {
       throw new Error('aria2DownloadDir 未设置。按 ASMR 脚本的写法必须显式传 dir；请把它设为 aria2 所在机器/容器内真实可写目录。');
@@ -2851,6 +3021,13 @@
     const base = normalizeAria2Dir(baseDir);
     const relative = String(relativeDir || '').trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
     return relative ? `${base}/${relative}` : base;
+  }
+
+  function joinRelativeAria2Dir(...parts) {
+    return parts
+      .map((part) => String(part || '').trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, ''))
+      .filter(Boolean)
+      .join('/');
   }
 
   function sanitizeAria2PathSegment(value) {
