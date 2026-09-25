@@ -17,6 +17,7 @@ Tampermonkey userscript for sending cloud links to 115 offline download.
 - Recent history can manually refresh task status and keeps short diagnostic logs.
 - Recent history can manually push detected files to aria2 after refresh.
 - The top panel also has a compact `推 aria2` button for the latest tracked history item.
+- If 115 reports `文件上传不完整`, pushing waits until the download URL is actually available.
 
 ## Install
 

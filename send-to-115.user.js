@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.6.2
+// @version      0.6.3
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -959,9 +959,11 @@
       const failed = matched.filter(isOfflineTaskFailed);
       const files = await listDownloadableFiles(job.watchCid || job.wpPathId || '0', getSettings());
       const newFiles = files.filter((file) => !job.beforeFileIds.has(file.id));
+      const pendingFiles = newFiles.filter((file) => !file.size);
+      const filesText = `files ${newFiles.length}${pendingFiles.length ? `, pending ${pendingFiles.length}` : ''}`;
       const status = matched.length
-        ? `offline ${done.length}/${matched.length}${failed.length ? ` failed ${failed.length}` : ''} · files ${newFiles.length}`
-        : `no task match · files ${newFiles.length}`;
+        ? `offline ${done.length}/${matched.length}${failed.length ? ` failed ${failed.length}` : ''} · ${filesText}`
+        : `no task match · ${filesText}`;
 
       upsertHistoryItem({
         id,
@@ -974,6 +976,7 @@
         done: done.length,
         failed: failed.length,
         files: newFiles.length,
+        pendingFiles: pendingFiles.length,
       });
       notify('状态已刷新', status);
     } catch (error) {
@@ -1042,7 +1045,7 @@
         name: file.name,
         size: file.size,
       })));
-      const pushed = await pushFilesToAria2(newFiles, settings);
+      const pushed = await pushFilesToAria2(newFiles, settings, id);
       upsertHistoryItem({
         id,
         status: 'pushed',
@@ -1148,7 +1151,7 @@
       });
       const files = await getFilesReadyForPush(job, settings, historyId, waitResult);
       appendHistoryLog(historyId, 'files ready', files.map((file) => ({ id: file.id, name: file.name, size: file.size })));
-      const pushed = await pushFilesToAria2(files, settings);
+      const pushed = await pushFilesToAria2(files, settings, historyId);
       upsertHistoryItem({
         id: historyId,
         status: 'pushed',
@@ -1583,7 +1586,7 @@
     const pickcode = String(entry.pc || entry.pick_code || entry.pickcode || '').trim();
     const name = String(entry.n || entry.name || entry.file_name || '').trim();
     const isDir = Boolean(entry.is_dir || entry.isdir || entry.cid && !entry.fid && !pickcode);
-    const size = Number(entry.s || entry.size || entry.file_size || 0);
+    const size = Number(entry.s || entry.size || entry.file_size || entry.fs || entry.fsize || entry.f_size || 0);
 
     return {
       id,
@@ -1594,15 +1597,53 @@
     };
   }
 
-  async function pushFilesToAria2(files, settings) {
+  async function pushFilesToAria2(files, settings, historyId) {
     const pushed = [];
     for (const file of files) {
-      const download = await getDownloadUrl(file);
+      const download = await waitForDownloadUrl(file, settings, historyId);
       const options = buildAria2Options(file, settings);
       await aria2AddUri(download.url, options, settings);
       pushed.push(file);
     }
     return pushed;
+  }
+
+  async function waitForDownloadUrl(file, settings, historyId) {
+    const startedAt = Date.now();
+    let attempts = 0;
+
+    while (Date.now() - startedAt < Number(settings.pollTimeoutMs)) {
+      attempts += 1;
+      try {
+        const download = await getDownloadUrl(file);
+        if (historyId) appendHistoryLog(historyId, 'download url ready', {
+          name: file.name,
+          attempts,
+        });
+        return download;
+      } catch (error) {
+        if (!isIncompleteUploadError(error)) throw error;
+
+        const waitMs = Math.min(Number(settings.pollIntervalMs), 30000);
+        if (historyId) {
+          upsertHistoryItem({
+            id: historyId,
+            status: 'waiting downloadable',
+            detail: `${file.name || file.pickcode} · ${error.message || String(error)}`,
+          });
+          appendHistoryLog(historyId, 'download url not ready', {
+            name: file.name,
+            size: file.size,
+            attempts,
+            error: error.message || String(error),
+          });
+        }
+        notify('等待 115 文件可下载', `${file.name || file.pickcode}`);
+        await sleep(waitMs);
+      }
+    }
+
+    throw new Error(`等待 115 文件可下载超时：${file.name || file.pickcode}`);
   }
 
   async function getDownloadUrl(file) {
@@ -1617,10 +1658,17 @@
     const json = parseJson(response.responseText);
     const url = findDownloadUrl(json);
     if (!json.state || !url) {
-      throw new Error(json.error_msg || json.msg || `获取下载链接失败：${file.name || file.pickcode}`);
+      const error = new Error(json.error_msg || json.msg || `获取下载链接失败：${file.name || file.pickcode}`);
+      error.response = json;
+      throw error;
     }
 
     return { url };
+  }
+
+  function isIncompleteUploadError(error) {
+    const message = error && (error.message || String(error));
+    return /上传不完整|文件上传不完整|not.*complete|incomplete/i.test(message || '');
   }
 
   function findDownloadUrl(value) {
