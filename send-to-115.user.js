@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.8.10
+// @version      0.8.11
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -30,7 +30,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.8.10';
+  const SCRIPT_VERSION = '0.8.11';
 
   const CONFIG = {
     settingsKey: 'send_to_115_settings',
@@ -53,6 +53,7 @@
     aria2DownloadDir: '',
     aria2ExtraOptionsJson: '{}',
     aria2SendReferer: true,
+    aria2SendCookie: true,
     aria2UserAgent: navigator.userAgent,
     pollIntervalMs: 30000,
     pollTimeoutMs: 7200000,
@@ -532,6 +533,7 @@
       aria2DownloadDir: String(settings.aria2DownloadDir || '').trim(),
       aria2ExtraOptionsJson: String(settings.aria2ExtraOptionsJson || '{}').trim() || '{}',
       aria2SendReferer: Boolean(settings.aria2SendReferer),
+      aria2SendCookie: settings.aria2SendCookie !== false,
       aria2UserAgent: String(settings.aria2UserAgent || navigator.userAgent).trim(),
       pollIntervalMs: clampNumber(settings.pollIntervalMs, 5000, 600000, DEFAULT_SETTINGS.pollIntervalMs),
       pollTimeoutMs: clampNumber(settings.pollTimeoutMs, 60000, 86400000, DEFAULT_SETTINGS.pollTimeoutMs),
@@ -727,6 +729,7 @@
       pushToAria2: true,
       aria2RpcUrl: 'http://token:admin_aria2@my2.mynas.local.com:11582/jsonrpc',
       aria2DownloadDir: '',
+      aria2SendCookie: true,
       pollIntervalMs: 30000,
       pollTimeoutMs: 7200000,
       stableRounds: 2,
@@ -1812,15 +1815,16 @@
     for (const file of files) {
       const download = file.readyDownload || await waitForDownloadUrl(file, settings, historyId);
       const options = buildAria2Options({ ...file, ...download.fileInfo }, settings);
+      const logOptions = redactAria2OptionsForLog(options);
       if (historyId) appendHistoryLog(historyId, 'aria2 addUri request', {
         name: file.name,
         url: download.url,
-        options,
+        options: logOptions,
       });
       logJson('aria2 addUri request', {
         name: file.name,
         url: download.url,
-        options,
+        options: logOptions,
       });
       const result = await aria2AddUri(download.url, options, settings);
       logJson('aria2 addUri result', {
@@ -2055,6 +2059,8 @@
         attempts: response && response.attempts,
         debugCurl: response && response.debugCurl,
         tabError: response && response.tabError,
+        aria2CookieNames: response && response.aria2CookieNames,
+        hasAria2CookieHeader: Boolean(response && response.aria2CookieHeader),
         hasResponse: Boolean(response && response.response),
       });
       if (response && response.debugCurl) {
@@ -2062,7 +2068,15 @@
       }
 
       if (!response || !response.ok || !response.response) return null;
-      return parseChromeDownurlResult(file, encoded, response.response, 'extensionDownurl');
+      const result = parseChromeDownurlResult(file, encoded, response.response, 'extensionDownurl');
+      if (response.aria2CookieHeader) {
+        result.fileInfo = {
+          ...(result.fileInfo || {}),
+          aria2CookieHeader: response.aria2CookieHeader,
+          aria2CookieNames: response.aria2CookieNames || [],
+        };
+      }
+      return result;
     } catch (error) {
       if (isIncompleteUploadError(error)) throw error;
       logJson('115 extension bridge unavailable', {
@@ -2732,9 +2746,23 @@
     if (settings.aria2UserAgent && !headers.some((header) => /^user-agent:/i.test(header))) {
       headers.push(`User-Agent: ${settings.aria2UserAgent}`);
     }
+    if (settings.aria2SendCookie && file.aria2CookieHeader && !headers.some((header) => /^cookie:/i.test(header))) {
+      headers.push(`Cookie: ${file.aria2CookieHeader}`);
+    }
     if (headers.length) options.header = headers;
 
     return options;
+  }
+
+  function redactAria2OptionsForLog(options) {
+    if (!options || typeof options !== 'object') return options;
+    const copy = { ...options };
+    if (Array.isArray(copy.header)) {
+      copy.header = copy.header.map((header) => (
+        /^cookie:/i.test(String(header || '')) ? 'Cookie: <redacted>' : header
+      ));
+    }
+    return copy;
   }
 
   function parseAria2Options(value) {
@@ -2759,7 +2787,7 @@
     };
     logJson('aria2 rpc payload', {
       rpcUrl: settings.aria2RpcUrl,
-      payload,
+      payload: redactAria2PayloadForLog(payload),
     });
 
     const response = await request({
@@ -2777,6 +2805,17 @@
       throw new Error(json.error.message || 'aria2 RPC 返回错误');
     }
     return json.result;
+  }
+
+  function redactAria2PayloadForLog(payload) {
+    if (!payload || typeof payload !== 'object') return payload;
+    return {
+      ...payload,
+      params: (payload.params || []).map((param) => {
+        if (!param || typeof param !== 'object' || Array.isArray(param)) return param;
+        return redactAria2OptionsForLog(param);
+      }),
+    };
   }
 
   async function getOptionalUserId() {

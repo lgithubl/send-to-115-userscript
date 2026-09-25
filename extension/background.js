@@ -41,6 +41,8 @@ async function chromeDownurl(payload) {
   }
 
   const cookieDiagnostics = await getCookieDiagnostics();
+  const aria2CookieHeader = await getCookieHeader('https://115.com/');
+  const aria2CookieNames = getCookieNamesFromHeader(aria2CookieHeader);
   const debugCurl = payload.debugCurl ? await buildDownurlDebugCurl(payload) : null;
   const attempts = [];
   const exporterResult = await exporterStyleDownurl(payload);
@@ -51,6 +53,8 @@ async function chromeDownurl(payload) {
       source: '115exporter-background',
       cookieNames: cookieDiagnostics.cookieNames,
       cookieDiagnostics,
+      aria2CookieHeader,
+      aria2CookieNames,
       attempts,
       ...(debugCurl ? { debugCurl } : {}),
     };
@@ -64,6 +68,8 @@ async function chromeDownurl(payload) {
       source: '115-tab',
       cookieNames: cookieDiagnostics.cookieNames,
       cookieDiagnostics,
+      aria2CookieHeader,
+      aria2CookieNames,
       attempts,
       ...(debugCurl ? { debugCurl } : {}),
     };
@@ -76,6 +82,8 @@ async function chromeDownurl(payload) {
     source: 'background',
     cookieNames: cookieDiagnostics.cookieNames,
     cookieDiagnostics,
+    aria2CookieHeader,
+    aria2CookieNames,
     attempts,
     ...(debugCurl ? { debugCurl } : {}),
     tabError: tabResult && tabResult.error,
