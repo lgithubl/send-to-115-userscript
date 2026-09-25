@@ -41,6 +41,7 @@ async function chromeDownurl(payload) {
   }
 
   const cookieDiagnostics = await getCookieDiagnostics();
+  const debugCurl = payload.debugCurl ? await buildDownurlDebugCurl(payload) : null;
   const attempts = [];
   const exporterResult = await exporterStyleDownurl(payload);
   attempts.push(summarizeAttempt('115exporter-background', exporterResult));
@@ -51,6 +52,7 @@ async function chromeDownurl(payload) {
       cookieNames: cookieDiagnostics.cookieNames,
       cookieDiagnostics,
       attempts,
+      ...(debugCurl ? { debugCurl } : {}),
     };
   }
 
@@ -63,6 +65,7 @@ async function chromeDownurl(payload) {
       cookieNames: cookieDiagnostics.cookieNames,
       cookieDiagnostics,
       attempts,
+      ...(debugCurl ? { debugCurl } : {}),
     };
   }
 
@@ -74,6 +77,7 @@ async function chromeDownurl(payload) {
     cookieNames: cookieDiagnostics.cookieNames,
     cookieDiagnostics,
     attempts,
+    ...(debugCurl ? { debugCurl } : {}),
     tabError: tabResult && tabResult.error,
   };
 }
@@ -146,6 +150,35 @@ function summarizeAttempt(source, result) {
     state: result && result.response && result.response.state,
     errno: result && result.response && result.response.errno,
     hasData: Boolean(result && result.response && result.response.data),
+  };
+}
+
+async function buildDownurlDebugCurl(payload) {
+  const cookieHeader = await getCookieHeader('https://proapi.115.com/');
+  const body = `data=${encodeURIComponent(payload.data)}`;
+  return {
+    warning: 'Sensitive: contains full 115 Cookie header.',
+    url: payload.url,
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Cookie': cookieHeader,
+    },
+    body,
+    cookieHeader,
+    cookieNames: getCookieNamesFromHeader(cookieHeader),
+    curlCommand: [
+      'curl',
+      '-i',
+      '-sS',
+      shellQuote(payload.url),
+      '-H',
+      shellQuote('Content-Type: application/x-www-form-urlencoded'),
+      '-H',
+      shellQuote(`Cookie: ${cookieHeader}`),
+      '--data-raw',
+      shellQuote(body),
+    ].join(' '),
   };
 }
 
@@ -289,4 +322,31 @@ function getCookies(details) {
       resolve(cookies || []);
     });
   });
+}
+
+async function getCookieHeader(url) {
+  const stores = await getCookieStores();
+  const cookiesByName = new Map();
+  for (const store of stores) {
+    const details = store.id ? { url, storeId: store.id } : { url };
+    const cookies = await getCookies(details);
+    for (const cookie of cookies) {
+      if (!cookie || !cookie.name || cookie.value === undefined) continue;
+      cookiesByName.set(cookie.name, cookie.value);
+    }
+  }
+  return Array.from(cookiesByName.entries())
+    .map(([name, value]) => `${name}=${value}`)
+    .join('; ');
+}
+
+function getCookieNamesFromHeader(header) {
+  return String(header || '')
+    .split(';')
+    .map((part) => part.split('=')[0].trim())
+    .filter(Boolean);
+}
+
+function shellQuote(value) {
+  return `'${String(value || '').replace(/'/g, `'\\''`)}'`;
 }

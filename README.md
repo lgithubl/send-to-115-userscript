@@ -81,6 +81,7 @@ Use the floating panel or the Tampermonkey menu command `设置 115 + aria2 配�
   "waitOfflineTaskStatus": true,
   "allowZeroSizeFiles": false,
   "useExtensionBridge": true,
+  "debugDownurlCurl": false,
   "preferNativeFetchDownurl": true,
   "useBrowserCookieHeader": true,
   "downurlCookieHeader": ""
@@ -109,11 +110,14 @@ Example for your aria2 RPC endpoint:
   "waitOfflineTaskStatus": true,
   "allowZeroSizeFiles": false,
   "useExtensionBridge": true,
+  "debugDownurlCurl": false,
   "preferNativeFetchDownurl": true,
   "useBrowserCookieHeader": true,
   "downurlCookieHeader": ""
 }
 ```
+
+Set `debugDownurlCurl` to `true`, or use the Tampermonkey menu command `切换 downurl curl 调试日志`, only when debugging. It prints a full `curl` command with the 115 Cookie header.
 
 When `aria2RpcUrl` uses the `http://token:SECRET@host/jsonrpc` shorthand, the script stores it as a normal RPC URL and moves `SECRET` into `aria2RpcSecret`.
 

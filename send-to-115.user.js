@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.8.7
+// @version      0.8.8
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -29,7 +29,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.8.7';
+  const SCRIPT_VERSION = '0.8.8';
 
   const CONFIG = {
     settingsKey: 'send_to_115_settings',
@@ -63,6 +63,7 @@
     preferNativeFetchDownurl: true,
     useExtensionBridge: true,
     downurlCookieHeader: '',
+    debugDownurlCurl: false,
   };
 
   const API = {
@@ -350,6 +351,15 @@
     focusSettingsEditor();
   });
 
+  GM_registerMenuCommand('切换 downurl curl 调试日志', () => {
+    const settings = getSettings();
+    const next = saveSettings({ debugDownurlCurl: !settings.debugDownurlCurl });
+    notify(
+      next.debugDownurlCurl ? '已开启 downurl curl 调试' : '已关闭 downurl curl 调试',
+      next.debugDownurlCurl ? '下一次获取直链会打印包含 Cookie 的 curl 命令' : '不再打印完整 Cookie',
+    );
+  });
+
   initPanel();
 
   document.addEventListener('contextmenu', (event) => {
@@ -532,6 +542,7 @@
       preferNativeFetchDownurl: settings.preferNativeFetchDownurl !== false,
       useExtensionBridge: settings.useExtensionBridge !== false,
       downurlCookieHeader: String(settings.downurlCookieHeader || '').trim(),
+      debugDownurlCurl: Boolean(settings.debugDownurlCurl),
     };
   }
 
@@ -724,6 +735,7 @@
       preferNativeFetchDownurl: true,
       useExtensionBridge: true,
       downurlCookieHeader: '',
+      debugDownurlCurl: false,
     });
   }
 
@@ -1906,11 +1918,12 @@
       cookieHeaderSource: manualCookieHeader ? 'manual' : (browserCookieHeader ? 'browser' : 'none'),
       extensionBridgeEnabled: Boolean(settings && settings.useExtensionBridge),
       nativeFetchEnabled: Boolean(settings && settings.preferNativeFetchDownurl),
+      debugDownurlCurl: Boolean(settings && settings.debugDownurlCurl),
     };
     logJson('115 chrome downurl request', requestInfo);
 
     if (settings && settings.useExtensionBridge && !manualCookieHeader) {
-      const extensionResult = await tryExtensionChromeDownurl(file, encoded, time);
+      const extensionResult = await tryExtensionChromeDownurl(file, encoded, time, settings);
       if (extensionResult && extensionResult.url) return extensionResult;
     }
 
@@ -1976,7 +1989,7 @@
     };
   }
 
-  async function tryExtensionChromeDownurl(file, encoded, time) {
+  async function tryExtensionChromeDownurl(file, encoded, time, settings) {
     try {
       const ping = await sendExtensionBridgeRequest({ action: 'ping' }, 3000, {
         settleMs: 800,
@@ -2005,6 +2018,7 @@
         url: API.chromeDownurl(time),
         data: encoded.data,
         file: summarizeDownloadFile(file),
+        debugCurl: Boolean(settings && settings.debugDownurlCurl),
       }, 12000, {
         settleMs: 2500,
         prefer: (candidate) => Boolean(candidate && candidate.ok && candidate.response && (
@@ -2025,9 +2039,13 @@
         cookieNames: response && response.cookieNames,
         cookieDiagnostics: response && response.cookieDiagnostics,
         attempts: response && response.attempts,
+        debugCurl: response && response.debugCurl,
         tabError: response && response.tabError,
         hasResponse: Boolean(response && response.response),
       });
+      if (response && response.debugCurl) {
+        logJson('115 downurl debug curl', response.debugCurl, 80000);
+      }
 
       if (!response || !response.ok || !response.response) return null;
       return parseChromeDownurlResult(file, encoded, response.response, 'extensionDownurl');
