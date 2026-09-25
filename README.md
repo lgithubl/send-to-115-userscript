@@ -12,6 +12,7 @@ Tampermonkey userscript for sending cloud links to 115 offline download.
 - Keyboard shortcut: `Alt` + `Shift` + `1`.
 - Optional random 115 folder per batch, polling completion, and pushing completed files to aria2 RPC.
 - Floating panel with settings, recent send history, and resend actions.
+- Recent history shows a separate status badge; long links are truncated and available on hover.
 
 ## Install
 

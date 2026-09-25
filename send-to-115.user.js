@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.5.0
+// @version      0.5.1
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -117,7 +117,7 @@
       right: 16px;
       bottom: 76px;
       z-index: 2147483646;
-      width: min(560px, calc(100vw - 32px));
+      width: min(380px, calc(100vw - 32px));
       max-height: min(720px, calc(100vh - 104px));
       border: 1px solid rgba(17, 24, 39, .16);
       border-radius: 8px;
@@ -164,10 +164,15 @@
     }
     .send-to-115-actions,
     .send-to-115-panel-row {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      align-items: center;
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 7px;
+      align-items: stretch;
+    }
+    .send-to-115-actions button,
+    .send-to-115-panel-row button {
+      width: 100%;
+      text-align: left;
     }
     .send-to-115-section-title {
       margin: 0 0 8px;
@@ -177,7 +182,7 @@
     .send-to-115-settings-textarea {
       box-sizing: border-box;
       width: 100%;
-      min-height: 260px;
+      min-height: 220px;
       resize: vertical;
       border: 1px solid #d1d5db;
       border-radius: 8px;
@@ -205,10 +210,50 @@
       font-size: 12px;
       margin-bottom: 6px;
     }
+    .send-to-115-history-meta span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .send-to-115-status {
+      display: block;
+      width: fit-content;
+      max-width: 100%;
+      box-sizing: border-box;
+      margin: 0 0 6px;
+      padding: 3px 7px;
+      border-radius: 999px;
+      background: #e0f2fe;
+      color: #075985;
+      font-weight: 700;
+      font-size: 12px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .send-to-115-status-failed {
+      background: #fee2e2;
+      color: #991b1b;
+    }
+    .send-to-115-status-pushed {
+      background: #dcfce7;
+      color: #166534;
+    }
     .send-to-115-history-url {
       color: #111827;
-      overflow-wrap: anywhere;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
       margin-bottom: 8px;
+    }
+    .send-to-115-history-detail {
+      color: #6b7280;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      margin: -3px 0 8px;
+      font-size: 12px;
     }
     .send-to-115-panel-collapsed {
       width: auto;
@@ -601,18 +646,39 @@
       meta.className = 'send-to-115-history-meta';
 
       const left = document.createElement('span');
-      left.textContent = `${formatTime(item.createdAt)} · ${item.urls.length} 条 · ${item.status || 'unknown'}`;
+      left.textContent = `${formatTime(item.createdAt)} · ${item.urls.length} 条`;
+      left.title = left.textContent;
       meta.appendChild(left);
 
       const right = document.createElement('span');
       right.textContent = item.folderName || item.wpPathId || '';
+      right.title = right.textContent;
       meta.appendChild(right);
       row.appendChild(meta);
 
+      const status = document.createElement('div');
+      status.className = `send-to-115-status ${getStatusClass(item.status)}`;
+      status.textContent = item.status || 'unknown';
+      status.title = [
+        item.status || 'unknown',
+        item.pushedCount ? `pushed ${item.pushedCount}` : '',
+        item.error || '',
+      ].filter(Boolean).join('\n');
+      row.appendChild(status);
+
       const url = document.createElement('div');
       url.className = 'send-to-115-history-url';
-      url.textContent = item.error || item.urls[0] || '';
+      url.textContent = item.urls[0] || '';
+      url.title = (item.urls || []).join('\n');
       row.appendChild(url);
+
+      if (item.error) {
+        const detail = document.createElement('div');
+        detail.className = 'send-to-115-history-detail';
+        detail.textContent = item.error;
+        detail.title = item.error;
+        row.appendChild(detail);
+      }
 
       const controls = document.createElement('div');
       controls.className = 'send-to-115-panel-row';
@@ -623,6 +689,12 @@
 
       container.appendChild(row);
     }
+  }
+
+  function getStatusClass(status) {
+    if (status === 'failed' || /failed|失败|error/i.test(status || '')) return 'send-to-115-status-failed';
+    if (status === 'pushed') return 'send-to-115-status-pushed';
+    return '';
   }
 
   function getHistory() {
