@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.7.9
+// @version      0.8.0
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -28,7 +28,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.7.9';
+  const SCRIPT_VERSION = '0.8.0';
 
   const CONFIG = {
     settingsKey: 'send_to_115_settings',
@@ -59,6 +59,8 @@
     waitOfflineTaskStatus: true,
     allowZeroSizeFiles: false,
     useBrowserCookieHeader: true,
+    preferNativeFetchDownurl: true,
+    downurlCookieHeader: '',
   };
 
   const API = {
@@ -525,6 +527,8 @@
       waitOfflineTaskStatus: settings.waitOfflineTaskStatus !== false,
       allowZeroSizeFiles: Boolean(settings.allowZeroSizeFiles),
       useBrowserCookieHeader: settings.useBrowserCookieHeader !== false,
+      preferNativeFetchDownurl: settings.preferNativeFetchDownurl !== false,
+      downurlCookieHeader: String(settings.downurlCookieHeader || '').trim(),
     };
   }
 
@@ -714,6 +718,8 @@
       waitOfflineTaskStatus: true,
       allowZeroSizeFiles: false,
       useBrowserCookieHeader: true,
+      preferNativeFetchDownurl: true,
+      downurlCookieHeader: '',
     });
   }
 
@@ -1875,12 +1881,14 @@
   async function getChromeDownloadUrl(file, settings) {
     const time = Math.floor(Date.now() / 1000);
     const encoded = m115Encode(JSON.stringify({ pickcode: file.pickcode }), time);
-    const cookieHeader = settings && settings.useBrowserCookieHeader
+    const manualCookieHeader = String(settings && settings.downurlCookieHeader || '').trim();
+    const browserCookieHeader = settings && settings.useBrowserCookieHeader
       ? await get115CookieHeader()
       : '';
+    const cookieHeader = manualCookieHeader || browserCookieHeader;
     const cookieNames = getCookieNames(cookieHeader);
-    const sendCookieHeader = isLikelyComplete115CookieHeader(cookieHeader);
-    logJson('115 chrome downurl request', {
+    const sendCookieHeader = Boolean(manualCookieHeader) || isLikelyComplete115CookieHeader(browserCookieHeader);
+    const requestInfo = {
       file: summarizeDownloadFile(file),
       time,
       url: API.chromeDownurl(time),
@@ -1889,8 +1897,17 @@
       cookieNames,
       cookieHeaderLoaded: Boolean(cookieHeader),
       cookieHeaderSent: sendCookieHeader,
-      cookieHeaderComplete: sendCookieHeader,
-    });
+      cookieHeaderComplete: Boolean(manualCookieHeader) || isLikelyComplete115CookieHeader(browserCookieHeader),
+      cookieHeaderSource: manualCookieHeader ? 'manual' : (browserCookieHeader ? 'browser' : 'none'),
+      nativeFetchEnabled: Boolean(settings && settings.preferNativeFetchDownurl),
+    };
+    logJson('115 chrome downurl request', requestInfo);
+
+    if (settings && settings.preferNativeFetchDownurl && !manualCookieHeader) {
+      const nativeResult = await tryNativeChromeDownurl(file, encoded, time);
+      if (nativeResult && nativeResult.url) return nativeResult;
+    }
+
     const response = await request({
       method: 'POST',
       url: API.chromeDownurl(time),
@@ -1940,6 +1957,59 @@
         pickcode: directItem.pickcode || file.pickcode,
       },
     };
+  }
+
+  async function tryNativeChromeDownurl(file, encoded, time) {
+    if (typeof fetch !== 'function') return null;
+
+    try {
+      const response = await fetch(API.chromeDownurl(time), {
+        method: 'POST',
+        credentials: 'include',
+        mode: 'cors',
+        headers: {
+          'Accept': 'application/json, text/javascript, */*; q=0.01',
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: `data=${encodeURIComponent(encoded.data)}`,
+      });
+      const json = await response.json();
+      const decoded = json && json.data ? parseJson(m115Decode(json.data, encoded.key)) : json;
+      const directItem = getChromeDownloadItem(decoded);
+      const downloadUrl = directItem.url || findDownloadUrl(decoded);
+      logJson('115 native downurl decoded', {
+        file: summarizeDownloadFile(file),
+        httpStatus: response.status,
+        response: json,
+        decoded,
+        directItem,
+        directUrl: downloadUrl,
+      });
+
+      if (!downloadUrl) return null;
+      logJson('115 direct url', {
+        source: 'nativeChromeDownurl',
+        name: directItem.name || file.name,
+        size: directItem.size || file.size,
+        pickcode: directItem.pickcode || file.pickcode,
+        directUrl: downloadUrl,
+      });
+      return {
+        url: downloadUrl,
+        response: decoded,
+        fileInfo: {
+          name: directItem.name || file.name,
+          size: directItem.size || file.size,
+          pickcode: directItem.pickcode || file.pickcode,
+        },
+      };
+    } catch (error) {
+      logJson('115 native downurl failed', {
+        file: summarizeDownloadFile(file),
+        error: error.message || String(error),
+      });
+      return null;
+    }
   }
 
   function summarizeDownloadFile(file) {
