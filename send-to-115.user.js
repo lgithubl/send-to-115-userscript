@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.8.0
+// @version      0.8.1
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -28,7 +28,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.8.0';
+  const SCRIPT_VERSION = '0.8.1';
 
   const CONFIG = {
     settingsKey: 'send_to_115_settings',
@@ -60,6 +60,7 @@
     allowZeroSizeFiles: false,
     useBrowserCookieHeader: true,
     preferNativeFetchDownurl: true,
+    useExtensionBridge: true,
     downurlCookieHeader: '',
   };
 
@@ -528,6 +529,7 @@
       allowZeroSizeFiles: Boolean(settings.allowZeroSizeFiles),
       useBrowserCookieHeader: settings.useBrowserCookieHeader !== false,
       preferNativeFetchDownurl: settings.preferNativeFetchDownurl !== false,
+      useExtensionBridge: settings.useExtensionBridge !== false,
       downurlCookieHeader: String(settings.downurlCookieHeader || '').trim(),
     };
   }
@@ -719,6 +721,7 @@
       allowZeroSizeFiles: false,
       useBrowserCookieHeader: true,
       preferNativeFetchDownurl: true,
+      useExtensionBridge: true,
       downurlCookieHeader: '',
     });
   }
@@ -1899,9 +1902,15 @@
       cookieHeaderSent: sendCookieHeader,
       cookieHeaderComplete: Boolean(manualCookieHeader) || isLikelyComplete115CookieHeader(browserCookieHeader),
       cookieHeaderSource: manualCookieHeader ? 'manual' : (browserCookieHeader ? 'browser' : 'none'),
+      extensionBridgeEnabled: Boolean(settings && settings.useExtensionBridge),
       nativeFetchEnabled: Boolean(settings && settings.preferNativeFetchDownurl),
     };
     logJson('115 chrome downurl request', requestInfo);
+
+    if (settings && settings.useExtensionBridge && !manualCookieHeader) {
+      const extensionResult = await tryExtensionChromeDownurl(file, encoded, time);
+      if (extensionResult && extensionResult.url) return extensionResult;
+    }
 
     if (settings && settings.preferNativeFetchDownurl && !manualCookieHeader) {
       const nativeResult = await tryNativeChromeDownurl(file, encoded, time);
@@ -1921,14 +1930,18 @@
       },
     });
     const json = parseJson(response.responseText);
+    return parseChromeDownurlResult(file, encoded, json, 'chromeDownurl');
+  }
+
+  function parseChromeDownurlResult(file, encoded, json, source) {
     const decoded = json && json.data ? parseJson(m115Decode(json.data, encoded.key)) : json;
     const directItem = getChromeDownloadItem(decoded);
     const downloadUrl = directItem.url || findDownloadUrl(decoded);
-    logJson('115 chrome downurl raw response', {
+    logJson(`115 ${source} raw response`, {
       file: summarizeDownloadFile(file),
       response: json,
     });
-    logJson('115 chrome downurl decoded', {
+    logJson(`115 ${source} decoded`, {
       file: summarizeDownloadFile(file),
       decoded,
       directItem,
@@ -1942,7 +1955,7 @@
     }
 
     logJson('115 direct url', {
-      source: 'chromeDownurl',
+      source,
       name: directItem.name || file.name,
       size: directItem.size || file.size,
       pickcode: directItem.pickcode || file.pickcode,
@@ -1957,6 +1970,35 @@
         pickcode: directItem.pickcode || file.pickcode,
       },
     };
+  }
+
+  async function tryExtensionChromeDownurl(file, encoded, time) {
+    try {
+      const response = await sendExtensionBridgeRequest({
+        action: 'chromeDownurl',
+        url: API.chromeDownurl(time),
+        data: encoded.data,
+        file: summarizeDownloadFile(file),
+      }, 12000);
+
+      logJson('115 extension bridge response', {
+        file: summarizeDownloadFile(file),
+        ok: response && response.ok,
+        error: response && response.error,
+        status: response && response.status,
+        cookieNames: response && response.cookieNames,
+        hasResponse: Boolean(response && response.response),
+      });
+
+      if (!response || !response.ok || !response.response) return null;
+      return parseChromeDownurlResult(file, encoded, response.response, 'extensionDownurl');
+    } catch (error) {
+      logJson('115 extension bridge unavailable', {
+        file: summarizeDownloadFile(file),
+        error: error.message || String(error),
+      });
+      return null;
+    }
   }
 
   async function tryNativeChromeDownurl(file, encoded, time) {
@@ -2010,6 +2052,33 @@
       });
       return null;
     }
+  }
+
+  function sendExtensionBridgeRequest(payload, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      const id = `send-to-115-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const timer = window.setTimeout(() => {
+        window.removeEventListener('message', onMessage);
+        reject(new Error('extension bridge timeout'));
+      }, timeoutMs || 10000);
+
+      function onMessage(event) {
+        if (event.source !== window) return;
+        const message = event.data;
+        if (!message || message.source !== 'send-to-115-extension' || message.id !== id) return;
+
+        window.clearTimeout(timer);
+        window.removeEventListener('message', onMessage);
+        resolve(message.payload || null);
+      }
+
+      window.addEventListener('message', onMessage);
+      window.postMessage({
+        source: 'send-to-115-userscript',
+        id,
+        payload,
+      }, '*');
+    });
   }
 
   function summarizeDownloadFile(file) {

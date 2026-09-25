@@ -20,10 +20,21 @@ Tampermonkey userscript for sending cloud links to 115 offline download.
 - If 115 reports `文件上传不完整`, pushing waits until the download URL is actually available.
 - Debug logs print the 115 download response, parsed direct URL, and aria2 `addUri` request.
 - Download URLs are resolved through the 115 Chrome/proapi `app/chrome/downurl` path first, with the older webapi path as fallback.
+- Optional Chrome companion extension for the one thing userscripts cannot reliably do: background `proapi.115.com` requests with Chrome's cookie jar.
 
 ## Install
 
 Open `send-to-115.user.js` with Tampermonkey, or use the raw GitHub URL after publishing the repository.
+
+Optional bridge extension:
+
+1. Open `chrome://extensions`.
+2. Enable Developer mode.
+3. Click `Load unpacked`.
+4. Select the repository's `extension/` folder.
+5. Reload the page that uses the userscript.
+
+The extension is intentionally minimal. It does not submit 115 tasks, render UI, or push aria2. It only accepts a userscript bridge request, performs the 115 `app/chrome/downurl` request in the extension background context, and returns the raw JSON response to the userscript for normal handling.
 
 ## Usage
 
@@ -57,7 +68,12 @@ Use the floating panel or the Tampermonkey menu command `设置 115 + aria2 配�
   "pollTimeoutMs": 7200000,
   "stableRounds": 2,
   "includeSubfolders": true,
-  "waitOfflineTaskStatus": true
+  "waitOfflineTaskStatus": true,
+  "allowZeroSizeFiles": false,
+  "useExtensionBridge": true,
+  "preferNativeFetchDownurl": true,
+  "useBrowserCookieHeader": true,
+  "downurlCookieHeader": ""
 }
 ```
 
@@ -80,7 +96,12 @@ Example for your aria2 RPC endpoint:
   "pollTimeoutMs": 7200000,
   "stableRounds": 2,
   "includeSubfolders": true,
-  "waitOfflineTaskStatus": true
+  "waitOfflineTaskStatus": true,
+  "allowZeroSizeFiles": false,
+  "useExtensionBridge": true,
+  "preferNativeFetchDownurl": true,
+  "useBrowserCookieHeader": true,
+  "downurlCookieHeader": ""
 }
 ```
 
@@ -115,11 +136,20 @@ This script calls 115 web endpoints with your existing login cookies:
 - `https://webapi.115.com/files/add`
 - `https://webapi.115.com/files`
 - `https://webapi.115.com/files/download`
-- `http://proapi.115.com/app/chrome/downurl`
+- `https://proapi.115.com/app/chrome/downurl`
 - `https://115.com/web/lixian/?ct=lixian&ac=add_task_urls`
 - `https://115.com/web/lixian/?ct=lixian&ac=task_lists`
 
 These are web-side endpoints and may change if 115 changes its site.
+
+When the bridge extension is installed and `useExtensionBridge` is `true`, successful bridge communication prints:
+
+```text
+[Send to 115 JSON] 115 extension bridge response ...
+[Send to 115 JSON] 115 extensionDownurl decoded ...
+```
+
+If the extension is not installed or unavailable, the userscript falls back to native fetch, GM requests, and finally the older webapi path.
 
 ## License
 

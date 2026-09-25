@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "Send to 115 Bridge",
+  "version": "0.1.0",
+  "description": "Minimal companion bridge for Send to 115 userscript.",
+  "permissions": [
+    "cookies"
+  ],
+  "host_permissions": [
+    "https://115.com/*",
+    "https://*.115.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_start"
+    }
+  ]
+}
