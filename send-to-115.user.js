@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.8.4
+// @version      0.8.5
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -29,7 +29,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.8.4';
+  const SCRIPT_VERSION = '0.8.5';
 
   const CONFIG = {
     settingsKey: 'send_to_115_settings',
@@ -1975,10 +1975,15 @@
 
   async function tryExtensionChromeDownurl(file, encoded, time) {
     try {
-      const ping = await sendExtensionBridgeRequest({ action: 'ping' }, 3000);
+      const ping = await sendExtensionBridgeRequest({ action: 'ping' }, 3000, {
+        settleMs: 800,
+        prefer: (response) => Boolean(response && response.ok && response.version),
+      });
       logJson('115 extension bridge ping', {
         ok: ping && ping.ok,
         version: ping && ping.version,
+        extensionId: ping && ping.extensionId,
+        bridgeVersion: ping && ping.bridgeVersion,
         error: ping && ping.error,
       });
       if (!ping || !ping.ok) {
@@ -1997,7 +2002,14 @@
         url: API.chromeDownurl(time),
         data: encoded.data,
         file: summarizeDownloadFile(file),
-      }, 12000);
+      }, 12000, {
+        settleMs: 2500,
+        prefer: (candidate) => Boolean(candidate && candidate.ok && candidate.response && (
+          candidate.source === '115-tab' ||
+          candidate.bridgeVersion ||
+          candidate.cookieDiagnostics
+        )),
+      });
 
       logJson('115 extension bridge response', {
         file: summarizeDownloadFile(file),
@@ -2005,6 +2017,8 @@
         error: response && response.error,
         status: response && response.status,
         source: response && response.source,
+        extensionId: response && response.extensionId,
+        bridgeVersion: response && response.bridgeVersion,
         cookieNames: response && response.cookieNames,
         cookieDiagnostics: response && response.cookieDiagnostics,
         tabError: response && response.tabError,
@@ -2076,11 +2090,16 @@
     }
   }
 
-  function sendExtensionBridgeRequest(payload, timeoutMs) {
+  function sendExtensionBridgeRequest(payload, timeoutMs, options) {
     return new Promise((resolve, reject) => {
       const targetWindow = getExtensionBridgeWindow();
       const listeners = [window];
       if (targetWindow && targetWindow !== window) listeners.push(targetWindow);
+      const responses = [];
+      let settled = false;
+      let settleTimer = 0;
+      const settleMs = Number(options && options.settleMs) || 0;
+      const prefer = options && typeof options.prefer === 'function' ? options.prefer : null;
       const id = `send-to-115-${Date.now()}-${Math.random().toString(16).slice(2)}`;
       const timer = window.setTimeout(() => {
         cleanup();
@@ -2095,13 +2114,50 @@
         }
       }
 
+      function finish(value) {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        if (settleTimer) window.clearTimeout(settleTimer);
+        cleanup();
+        resolve(value || null);
+      }
+
+      function chooseResponse() {
+        if (!responses.length) return null;
+        if (prefer) {
+          const preferred = responses.find((candidate) => {
+            try {
+              return prefer(candidate);
+            } catch (_) {
+              return false;
+            }
+          });
+          if (preferred) return preferred;
+        }
+        return responses.find((candidate) => candidate && candidate.ok) || responses[responses.length - 1];
+      }
+
       function onMessage(event) {
         const message = event.data;
         if (!message || message.source !== 'send-to-115-extension' || message.id !== id) return;
 
-        window.clearTimeout(timer);
-        cleanup();
-        resolve(message.payload || null);
+        responses.push(message.payload || null);
+        if (prefer) {
+          try {
+            if (prefer(message.payload || null)) {
+              finish(message.payload || null);
+              return;
+            }
+          } catch (_) {}
+        }
+        if (!settleMs) {
+          finish(chooseResponse());
+          return;
+        }
+        if (!settleTimer) {
+          settleTimer = window.setTimeout(() => finish(chooseResponse()), settleMs);
+        }
       }
 
       for (const listenerWindow of listeners) {

@@ -18,6 +18,7 @@ async function handleMessage(payload) {
     return {
       ok: true,
       version: chrome.runtime.getManifest().version,
+      extensionId: chrome.runtime.id,
     };
   }
 
