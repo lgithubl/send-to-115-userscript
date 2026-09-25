@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.7.2
+// @version      0.7.3
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -52,6 +52,7 @@
     stableRounds: 2,
     includeSubfolders: true,
     waitOfflineTaskStatus: true,
+    allowZeroSizeFiles: false,
   };
 
   const API = {
@@ -513,6 +514,7 @@
       stableRounds: clampNumber(settings.stableRounds, 1, 20, DEFAULT_SETTINGS.stableRounds),
       includeSubfolders: Boolean(settings.includeSubfolders),
       waitOfflineTaskStatus: settings.waitOfflineTaskStatus !== false,
+      allowZeroSizeFiles: Boolean(settings.allowZeroSizeFiles),
     };
   }
 
@@ -700,6 +702,7 @@
       pollTimeoutMs: 7200000,
       stableRounds: 2,
       waitOfflineTaskStatus: true,
+      allowZeroSizeFiles: false,
     });
   }
 
@@ -963,9 +966,10 @@
       const matched = tasks.filter((task) => matchOfflineTask(task, matcher, job));
       const done = matched.filter(isOfflineTaskDone);
       const failed = matched.filter(isOfflineTaskFailed);
-      const files = await listDownloadableFiles(job.watchCid || job.wpPathId || '0', getSettings());
+      const settings = getSettings();
+      const files = await listDownloadableFiles(job.watchCid || job.wpPathId || '0', settings);
       const newFiles = files.filter((file) => !job.beforeFileIds.has(file.id));
-      const pendingFiles = newFiles.filter((file) => !file.size);
+      const pendingFiles = newFiles.filter((file) => isPendingFile(file, settings));
       const filesText = `files ${newFiles.length}${pendingFiles.length ? `, pending ${pendingFiles.length}` : ''}`;
       const status = matched.length
         ? `offline ${done.length}/${matched.length}${failed.length ? ` failed ${failed.length}` : ''} · ${filesText}`
@@ -1040,8 +1044,11 @@
       upsertHistoryItem({ id, status: 'pushing aria2', error: '' });
       appendHistoryLog(id, 'manual aria2 push started');
 
-      const files = await listDownloadableFiles(job.watchCid || job.wpPathId || '0', settings);
-      const newFiles = files.filter((file) => !job.beforeFileIds.has(file.id));
+      const newFiles = await waitForCompletedFiles(
+        { ...job, watchCid: job.watchCid || job.wpPathId || '0' },
+        settings,
+        id,
+      );
       if (!newFiles.length) {
         throw new Error('目标目录没有发现可推送的新增文件');
       }
@@ -1050,6 +1057,7 @@
         id: file.id,
         name: file.name,
         size: file.size,
+        ready: !isPendingFile(file, settings),
       })));
       const pushed = await pushFilesToAria2(newFiles, settings, id);
       upsertHistoryItem({
@@ -1439,7 +1447,7 @@
     const percent = Number(findFirstByKey(task, /(percent|progress|percent_done)$/i));
     if (Number.isFinite(percent) && percent >= 100) return true;
 
-    return Boolean(findFirstByKey(task, /^(file_id|fid|pickcode|pick_code)$/i));
+    return false;
   }
 
   function isOfflineTaskFailed(task) {
@@ -1460,17 +1468,30 @@
 
   async function waitForFilesAfterOfflineWait(job, settings, historyId) {
     const startedAt = Date.now();
-    const fileAppearTimeoutMs = Math.min(Number(settings.pollTimeoutMs), Math.max(Number(settings.pollIntervalMs) * 4, 120000));
+    const fileAppearTimeoutMs = Number(settings.pollTimeoutMs);
 
     while (Date.now() - startedAt < fileAppearTimeoutMs) {
       const files = await listDownloadableFiles(job.watchCid, settings);
       const newFiles = files.filter((file) => !job.beforeFileIds.has(file.id));
-      if (newFiles.length) return newFiles;
-      if (historyId) upsertHistoryItem({ id: historyId, status: 'offline done, waiting files' });
+      const readyFiles = newFiles.filter((file) => !isPendingFile(file, settings));
+      const pendingFiles = newFiles.filter((file) => isPendingFile(file, settings));
+      if (readyFiles.length) return readyFiles;
+      if (historyId) {
+        upsertHistoryItem({
+          id: historyId,
+          status: `offline done, waiting files ready ${readyFiles.length}/${newFiles.length}`,
+        });
+        appendHistoryLog(historyId, 'offline done waiting files ready', {
+          files: newFiles.length,
+          ready: readyFiles.length,
+          pending: pendingFiles.length,
+          pendingFiles: pendingFiles.map((file) => summarizeDownloadFile(file)),
+        });
+      }
       await sleep(Math.min(Number(settings.pollIntervalMs), 15000));
     }
 
-    throw new Error('离线任务已完成，但目标目录未找到新增文件');
+    throw new Error('离线任务已完成，但目标目录未找到可推送的就绪文件');
   }
 
   async function getFilesReadyForPush(job, settings, historyId, waitResult) {
@@ -1499,28 +1520,34 @@
     while (Date.now() - startedAt < Number(settings.pollTimeoutMs)) {
       const files = await listDownloadableFiles(job.watchCid, settings);
       const newFiles = files.filter((file) => !job.beforeFileIds.has(file.id));
-      const signature = newFiles
+      const readyFiles = newFiles.filter((file) => !isPendingFile(file, settings));
+      const pendingFiles = newFiles.filter((file) => isPendingFile(file, settings));
+      const signature = readyFiles
         .map((file) => `${file.id}:${file.size || ''}:${file.pickcode || ''}`)
         .sort()
         .join('|');
 
-      if (newFiles.length && signature === lastSignature) {
+      if (readyFiles.length && signature === lastSignature) {
         stableCount += 1;
       } else {
-        stableCount = newFiles.length ? 1 : 0;
+        stableCount = readyFiles.length ? 1 : 0;
         lastSignature = signature;
       }
 
-      const status = `directory ${newFiles.length} files stable ${stableCount}/${settings.stableRounds}`;
+      const pendingText = pendingFiles.length ? `, pending ${pendingFiles.length}` : '';
+      const status = `directory ${readyFiles.length}/${newFiles.length} ready${pendingText} stable ${stableCount}/${settings.stableRounds}`;
       if (historyId) upsertHistoryItem({ id: historyId, status });
       if (historyId) appendHistoryLog(historyId, 'directory poll', {
         files: newFiles.length,
+        ready: readyFiles.length,
+        pending: pendingFiles.length,
         stableCount,
+        pendingFiles: pendingFiles.map((file) => summarizeDownloadFile(file)),
       });
-      notify('等待 115 离线完成', `${newFiles.length} 个文件，稳定 ${stableCount}/${settings.stableRounds}`);
+      notify('等待 115 离线完成', `${readyFiles.length}/${newFiles.length} 个文件就绪，稳定 ${stableCount}/${settings.stableRounds}`);
 
-      if (newFiles.length && stableCount >= Number(settings.stableRounds)) {
-        return newFiles;
+      if (readyFiles.length && stableCount >= Number(settings.stableRounds)) {
+        return readyFiles;
       }
 
       await sleep(Number(settings.pollIntervalMs));
@@ -1604,9 +1631,18 @@
     };
   }
 
+  function isPendingFile(file, settings) {
+    if (settings.allowZeroSizeFiles) return false;
+    if (!file || file.isDir || !file.pickcode) return true;
+    const size = Number(file.size || 0);
+    const raw = file.raw || {};
+    const sha = String(raw.sha || raw.sha1 || raw.file_sha1 || '').trim();
+    return size <= 0 && !sha;
+  }
+
   function summarizeFileEntry(entry) {
     const summary = {};
-    for (const key of ['fid', 'file_id', 'cid', 'id', 'pc', 'pick_code', 'pickcode', 'n', 'name', 'file_name', 's', 'size', 'file_size', 'fs', 'fsize', 'sha1', 'ico', 'class']) {
+    for (const key of ['fid', 'file_id', 'cid', 'id', 'pc', 'pick_code', 'pickcode', 'n', 'name', 'file_name', 's', 'size', 'file_size', 'fs', 'fsize', 'sha', 'sha1', 'file_sha1', 'ico', 'class']) {
       if (entry[key] !== undefined && entry[key] !== null) summary[key] = entry[key];
     }
     return summary;
