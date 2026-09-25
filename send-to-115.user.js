@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.7.1
+// @version      0.7.2
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -77,7 +77,7 @@
       return `https://webapi.115.com/files?${params}`;
     },
     download: (pickcode) => `https://webapi.115.com/files/download?pickcode=${encodeURIComponent(pickcode)}&_=${Date.now()}`,
-    chromeDownurl: (time) => `http://proapi.115.com/app/chrome/downurl?t=${time}`,
+    chromeDownurl: (time) => `https://proapi.115.com/app/chrome/downurl?t=${time}`,
     addMany: 'https://115.com/web/lixian/?ct=lixian&ac=add_task_urls',
     taskList: 'https://115.com/web/lixian/?ct=lixian&ac=task_lists',
   };
@@ -846,6 +846,10 @@
     if (!panelCollapsed) renderPanel();
   }
 
+  function logJson(label, value, maxLength = 12000) {
+    console.info(`[Send to 115 JSON] ${label} ${safeStringify(value, maxLength)}`);
+  }
+
   function safeStringify(value, maxLength) {
     let text = '';
     try {
@@ -1612,17 +1616,22 @@
     const pushed = [];
     for (const file of files) {
       const download = await waitForDownloadUrl(file, settings, historyId);
-      const options = buildAria2Options(file, settings);
+      const options = buildAria2Options({ ...file, ...download.fileInfo }, settings);
       if (historyId) appendHistoryLog(historyId, 'aria2 addUri request', {
         name: file.name,
         url: download.url,
         options,
       });
-      console.info('[Send to 115] aria2 addUri request', {
+      logJson('aria2 addUri request', {
+        name: file.name,
         url: download.url,
         options,
       });
-      await aria2AddUri(download.url, options, settings);
+      const result = await aria2AddUri(download.url, options, settings);
+      logJson('aria2 addUri result', {
+        name: file.name,
+        result,
+      });
       pushed.push(file);
     }
     return pushed;
@@ -1688,7 +1697,7 @@
     });
     const json = parseJson(response.responseText);
     const downloadUrl = findDownloadUrl(json);
-    console.info('[Send to 115] 115 download response', {
+    logJson('115 webapi download response', {
       file,
       requestUrl: url,
       response: json,
@@ -1700,13 +1709,20 @@
       throw error;
     }
 
-    console.info('[Send to 115] 115 direct url', downloadUrl);
+    logJson('115 direct url', { source: 'webapi', directUrl: downloadUrl });
     return { url: downloadUrl, response: json };
   }
 
   async function getChromeDownloadUrl(file) {
     const time = Math.floor(Date.now() / 1000);
     const encoded = m115Encode(JSON.stringify({ pickcode: file.pickcode }), time);
+    logJson('115 chrome downurl request', {
+      file: summarizeDownloadFile(file),
+      time,
+      url: API.chromeDownurl(time),
+      payload: { pickcode: file.pickcode },
+      dataLength: encoded.data.length,
+    });
     const response = await request({
       method: 'POST',
       url: API.chromeDownurl(time),
@@ -1720,14 +1736,18 @@
     });
     const json = parseJson(response.responseText);
     const decoded = json && json.data ? parseJson(m115Decode(json.data, encoded.key)) : json;
-    const downloadUrl = findDownloadUrl(decoded);
-    console.info('[Send to 115] 115 chrome downurl response', {
-      file,
+    const directItem = getChromeDownloadItem(decoded);
+    const downloadUrl = directItem.url || findDownloadUrl(decoded);
+    logJson('115 chrome downurl raw response', {
+      file: summarizeDownloadFile(file),
       response: json,
+    });
+    logJson('115 chrome downurl decoded', {
+      file: summarizeDownloadFile(file),
       decoded,
+      directItem,
       directUrl: downloadUrl,
     });
-    console.info('[Send to 115] 115 chrome downurl decoded JSON', safeStringify(decoded, 4000));
 
     if (!downloadUrl) {
       const error = new Error(findErrorMessage(decoded) || findErrorMessage(json) || `chrome downurl 获取下载链接失败：${file.name || file.pickcode}`);
@@ -1735,8 +1755,51 @@
       throw error;
     }
 
-    console.info('[Send to 115] 115 direct url', downloadUrl);
-    return { url: downloadUrl, response: decoded };
+    logJson('115 direct url', {
+      source: 'chromeDownurl',
+      name: directItem.name || file.name,
+      size: directItem.size || file.size,
+      pickcode: directItem.pickcode || file.pickcode,
+      directUrl: downloadUrl,
+    });
+    return {
+      url: downloadUrl,
+      response: decoded,
+      fileInfo: {
+        name: directItem.name || file.name,
+        size: directItem.size || file.size,
+        pickcode: directItem.pickcode || file.pickcode,
+      },
+    };
+  }
+
+  function summarizeDownloadFile(file) {
+    return {
+      id: file && file.id,
+      name: file && file.name,
+      pickcode: file && file.pickcode,
+      size: file && file.size,
+      raw: file && file.raw,
+    };
+  }
+
+  function getChromeDownloadItem(decoded) {
+    const item = decoded && typeof decoded === 'object' ? Object.values(decoded).pop() : null;
+    if (!item || typeof item !== 'object') {
+      return { url: '', name: '', size: 0, pickcode: '' };
+    }
+    const nestedUrl = item.url && typeof item.url === 'object' ? item.url.url : item.url;
+    const url = [item.file_url, item.file_url_302, nestedUrl, item.download_url]
+      .map((candidate) => String(candidate || '').trim())
+      .find((candidate) => /^https?:\/\//i.test(candidate)) || '';
+
+    return {
+      url,
+      name: String(item.file_name || item.name || ''),
+      size: Number(item.file_size || item.size || 0),
+      pickcode: String(item.pick_code || item.pickcode || ''),
+      raw: item,
+    };
   }
 
   function findErrorMessage(value) {
@@ -1770,7 +1833,7 @@
   const M115_KEY_L = [120, 6, 173, 76, 51, 134, 93, 24, 76, 1, 63, 70];
 
   function m115Encode(src, time) {
-    const key = stringToBytes(md5(`!@###@##${time}DFDR@#@#`));
+    const key = stringToBytes(md5(`!@###@#${time}DFDR@#@#`));
     let tmp = stringToBytes(src);
     tmp = m115SymEncode(tmp, key, null);
     tmp = key.slice(0, 16).concat(tmp);
@@ -1857,22 +1920,10 @@
       padded[--target] = bytes[index];
     }
     padded[--target] = 0;
-    while (target > 2) padded[--target] = randomNonZeroByte();
+    while (target > 2) padded[--target] = 0xff;
     padded[--target] = 2;
     padded[--target] = 0;
     return padded;
-  }
-
-  function randomNonZeroByte() {
-    const buffer = new Uint8Array(1);
-    if (window.crypto && window.crypto.getRandomValues) {
-      do window.crypto.getRandomValues(buffer);
-      while (buffer[0] === 0);
-      return buffer[0];
-    }
-    let value = 0;
-    while (!value) value = Math.floor(Math.random() * 256);
-    return value;
   }
 
   function modPow(base, exponent, modulus) {
@@ -2155,22 +2206,28 @@
     const params = [];
     if (settings.aria2RpcSecret) params.push(`token:${settings.aria2RpcSecret}`);
     params.push([url], options);
+    const payload = {
+      jsonrpc: '2.0',
+      id: `send-to-115-${Date.now()}`,
+      method: 'aria2.addUri',
+      params,
+    };
+    logJson('aria2 rpc payload', {
+      rpcUrl: settings.aria2RpcUrl,
+      payload,
+    });
 
     const response = await request({
       method: 'POST',
       url: settings.aria2RpcUrl,
-      data: JSON.stringify({
-        jsonrpc: '2.0',
-        id: `send-to-115-${Date.now()}`,
-        method: 'aria2.addUri',
-        params,
-      }),
+      data: JSON.stringify(payload),
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
       },
     });
     const json = parseJson(response.responseText);
+    logJson('aria2 rpc response', json);
     if (json.error) {
       throw new Error(json.error.message || 'aria2 RPC 返回错误');
     }
