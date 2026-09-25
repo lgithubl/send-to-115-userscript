@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.8.3
+// @version      0.8.4
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -29,7 +29,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.8.3';
+  const SCRIPT_VERSION = '0.8.4';
 
   const CONFIG = {
     settingsKey: 'send_to_115_settings',
@@ -1981,7 +1981,16 @@
         version: ping && ping.version,
         error: ping && ping.error,
       });
-      if (!ping || !ping.ok) return null;
+      if (!ping || !ping.ok) {
+        const staleMessage = ping && ping.error
+          ? `扩展后台可能还是旧版：${ping.error}`
+          : '扩展后台没有响应版本信息';
+        notify('115 扩展需要重新加载', `${staleMessage}。请在 chrome://extensions 点 Reload 或删除旧扩展后重新 Load unpacked。`);
+        logJson('115 extension bridge stale or old', {
+          ping,
+          hint: 'Reload extension 0.1.2+ in chrome://extensions, then refresh this page.',
+        });
+      }
 
       const response = await sendExtensionBridgeRequest({
         action: 'chromeDownurl',

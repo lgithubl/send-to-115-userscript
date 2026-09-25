@@ -44,6 +44,8 @@ Packaged downloads:
 4. Unzip it once, then select the unzipped folder in `chrome://extensions` -> `Load unpacked`.
 5. Download `send-to-115-userscript` only when you also want the packaged userscript file.
 
+When updating the extension, Chrome does not always replace the old background worker by itself. Open `chrome://extensions`, click `Reload` on `Send to 115 Bridge`, then refresh the page that uses the userscript. If the userscript log says `Unknown action: ping`, the old extension background is still running.
+
 ## Usage
 
 1. Log in to 115 in the same browser profile.
