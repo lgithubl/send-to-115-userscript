@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.7.3
+// @version      0.7.4
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -970,6 +970,11 @@
       const files = await listDownloadableFiles(job.watchCid || job.wpPathId || '0', settings);
       const newFiles = files.filter((file) => !job.beforeFileIds.has(file.id));
       const pendingFiles = newFiles.filter((file) => isPendingFile(file, settings));
+      logJson('manual refresh files', {
+        job: serializeJob(job),
+        files: newFiles.map((file) => summarizeDownloadFile(file)),
+        pendingFiles: pendingFiles.map((file) => summarizeDownloadFile(file)),
+      });
       const filesText = `files ${newFiles.length}${pendingFiles.length ? `, pending ${pendingFiles.length}` : ''}`;
       const status = matched.length
         ? `offline ${done.length}/${matched.length}${failed.length ? ` failed ${failed.length}` : ''} · ${filesText}`
@@ -1473,8 +1478,9 @@
     while (Date.now() - startedAt < fileAppearTimeoutMs) {
       const files = await listDownloadableFiles(job.watchCid, settings);
       const newFiles = files.filter((file) => !job.beforeFileIds.has(file.id));
-      const readyFiles = newFiles.filter((file) => !isPendingFile(file, settings));
-      const pendingFiles = newFiles.filter((file) => isPendingFile(file, settings));
+      const readyFiles = await resolveReadyFiles(newFiles, settings, historyId);
+      const readyIds = new Set(readyFiles.map((file) => file.id));
+      const pendingFiles = newFiles.filter((file) => !readyIds.has(file.id));
       if (readyFiles.length) return readyFiles;
       if (historyId) {
         upsertHistoryItem({
@@ -1520,10 +1526,11 @@
     while (Date.now() - startedAt < Number(settings.pollTimeoutMs)) {
       const files = await listDownloadableFiles(job.watchCid, settings);
       const newFiles = files.filter((file) => !job.beforeFileIds.has(file.id));
-      const readyFiles = newFiles.filter((file) => !isPendingFile(file, settings));
-      const pendingFiles = newFiles.filter((file) => isPendingFile(file, settings));
+      const readyFiles = await resolveReadyFiles(newFiles, settings, historyId);
+      const readyIds = new Set(readyFiles.map((file) => file.id));
+      const pendingFiles = newFiles.filter((file) => !readyIds.has(file.id));
       const signature = readyFiles
-        .map((file) => `${file.id}:${file.size || ''}:${file.pickcode || ''}`)
+        .map((file) => `${file.id}:${file.size || ''}:${file.pickcode || ''}:${file.readyDownload ? file.readyDownload.url : ''}`)
         .sort()
         .join('|');
 
@@ -1575,6 +1582,35 @@
     }
 
     return files;
+  }
+
+  async function resolveReadyFiles(files, settings, historyId) {
+    const readyFiles = [];
+    for (const file of files) {
+      if (!isPendingFile(file, settings)) {
+        readyFiles.push(file);
+        continue;
+      }
+
+      try {
+        const download = await getDownloadUrl(file);
+        file.readyDownload = download;
+        readyFiles.push(file);
+        if (historyId) appendHistoryLog(historyId, 'pending file direct url ready', {
+          file: summarizeDownloadFile(file),
+          url: download.url,
+        });
+      } catch (error) {
+        if (!isIncompleteUploadError(error)) {
+          logJson('pending file direct url probe failed', {
+            file: summarizeDownloadFile(file),
+            error: error.message || String(error),
+            response: error.response || null,
+          });
+        }
+      }
+    }
+    return readyFiles;
   }
 
   async function snapshotFileIds(cid, settings) {
@@ -1651,7 +1687,7 @@
   async function pushFilesToAria2(files, settings, historyId) {
     const pushed = [];
     for (const file of files) {
-      const download = await waitForDownloadUrl(file, settings, historyId);
+      const download = file.readyDownload || await waitForDownloadUrl(file, settings, historyId);
       const options = buildAria2Options({ ...file, ...download.fileInfo }, settings);
       if (historyId) appendHistoryLog(historyId, 'aria2 addUri request', {
         name: file.name,
