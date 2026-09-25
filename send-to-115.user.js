@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.7.5
+// @version      0.7.6
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -79,6 +79,7 @@
     },
     categoryGet: (cid) => `https://webapi.115.com/category/get?aid=1&cid=${encodeURIComponent(cid)}`,
     download: (pickcode) => `https://webapi.115.com/files/download?pickcode=${encodeURIComponent(pickcode)}&_=${Date.now()}`,
+    proapiRoot: () => `https://proapi.115.com/?_=${Date.now()}`,
     chromeDownurl: (time) => `https://proapi.115.com/app/chrome/downurl?t=${time}`,
     addMany: 'https://115.com/web/lixian/?ct=lixian&ac=add_task_urls',
     taskList: 'https://115.com/web/lixian/?ct=lixian&ac=task_lists',
@@ -1761,6 +1762,21 @@
     return Math.round(amount * (units[match[2].toLowerCase()] || 1));
   }
 
+  function summarizeResponseHeaders(headersText) {
+    const summary = {};
+    String(headersText || '').split(/\r?\n/).forEach((line) => {
+      const index = line.indexOf(':');
+      if (index === -1) return;
+      const key = line.slice(0, index).trim().toLowerCase();
+      const value = line.slice(index + 1).trim();
+      if (!key) return;
+      if (/^(set-cookie|content-type|location|date|server|x-|cf-|cache-control)$/i.test(key) || key.startsWith('x-')) {
+        summary[key] = key === 'set-cookie' ? value.replace(/=.*/, '=<redacted>') : value;
+      }
+    });
+    return summary;
+  }
+
   async function pushFilesToAria2(files, settings, historyId) {
     const pushed = [];
     for (const file of files) {
@@ -1865,6 +1881,7 @@
   async function getChromeDownloadUrl(file) {
     const time = Math.floor(Date.now() / 1000);
     const encoded = m115Encode(JSON.stringify({ pickcode: file.pickcode }), time);
+    await warmupProapi(file);
     logJson('115 chrome downurl request', {
       file: summarizeDownloadFile(file),
       time,
@@ -1920,6 +1937,34 @@
         pickcode: directItem.pickcode || file.pickcode,
       },
     };
+  }
+
+  let proapiWarmedAt = 0;
+
+  async function warmupProapi(file) {
+    if (Date.now() - proapiWarmedAt < 60000) return;
+    try {
+      const response = await request({
+        method: 'GET',
+        url: API.proapiRoot(),
+        headers: {
+          'Accept': '*/*',
+          'Referer': 'https://115.com/',
+        },
+      });
+      proapiWarmedAt = Date.now();
+      logJson('115 proapi warmup response', {
+        file: summarizeDownloadFile(file),
+        status: response.status,
+        finalUrl: response.finalUrl || '',
+        headers: summarizeResponseHeaders(response.responseHeaders),
+      });
+    } catch (error) {
+      logJson('115 proapi warmup failed', {
+        file: summarizeDownloadFile(file),
+        error: error.message || String(error),
+      });
+    }
   }
 
   function summarizeDownloadFile(file) {
@@ -2498,6 +2543,8 @@
     return new Promise((resolve, reject) => {
       GM_xmlhttpRequest({
         timeout: CONFIG.requestTimeout,
+        anonymous: false,
+        withCredentials: true,
         ...options,
         onload: (response) => {
           if (response.status >= 200 && response.status < 300) {
