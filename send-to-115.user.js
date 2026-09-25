@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.8.20
+// @version      0.8.21
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -30,7 +30,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.8.20';
+  const SCRIPT_VERSION = '0.8.21';
 
   const CONFIG = {
     settingsKey: 'send_to_115_settings',
@@ -365,6 +365,12 @@
       next.debugDownurlCurl ? '已开启 downurl curl 调试' : '已关闭 downurl curl 调试',
       next.debugDownurlCurl ? '下一次获取直链会打印包含 Cookie 的 curl 命令' : '不再打印完整 Cookie',
     );
+  });
+
+  GM_registerMenuCommand('调试：打印 115 离线任务', () => {
+    const input = window.prompt('输入任务号/任务名/关键词，留空打印前 10 个任务：', '1369164');
+    if (input === null) return;
+    debugPrintOfflineTasks(input.trim());
   });
 
   initPanel();
@@ -1269,6 +1275,29 @@
     for (const item of history) {
       await refreshHistoryStatus(item.id);
       await sleep(300);
+    }
+  }
+
+  async function debugPrintOfflineTasks(keyword) {
+    try {
+      const tasks = await listOfflineTasks();
+      const matched = keyword
+        ? tasks.filter((task) => objectText(task).includes(keyword))
+        : tasks.slice(0, 10);
+      logJson('debug offline tasks', {
+        keyword,
+        taskCount: tasks.length,
+        matchedCount: matched.length,
+        matched,
+      }, 60000);
+      notify('115 任务调试已打印', `matched ${matched.length}/${tasks.length}`);
+    } catch (error) {
+      logJson('debug offline tasks failed', {
+        keyword,
+        error: error.message || String(error),
+        response: error.response || null,
+      }, 60000);
+      notify('115 任务调试失败', error.message || String(error));
     }
   }
 
