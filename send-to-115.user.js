@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.8.13
+// @version      0.8.14
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -30,7 +30,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.8.13';
+  const SCRIPT_VERSION = '0.8.14';
 
   const CONFIG = {
     settingsKey: 'send_to_115_settings',
@@ -1609,7 +1609,7 @@
     throw new Error('等待 115 离线完成超时');
   }
 
-  async function listDownloadableFiles(cid, settings, seenCids = new Set()) {
+  async function listDownloadableFiles(cid, settings, seenCids = new Set(), relativePathParts = []) {
     const files = [];
     const entries = await listFiles(cid);
 
@@ -1625,11 +1625,21 @@
             entry: summarizeDownloadFile(item),
           });
         }
-        files.push(...await listDownloadableFiles(item.id, settings, seenCids));
+        files.push(...await listDownloadableFiles(
+          item.id,
+          settings,
+          seenCids,
+          relativePathParts.concat([item.name].filter(Boolean)),
+        ));
         continue;
       }
 
-      if (item.pickcode) files.push(item);
+      if (item.pickcode) {
+        files.push({
+          ...item,
+          relativeDir: relativePathParts.map(sanitizeAria2PathSegment).filter(Boolean).join('/'),
+        });
+      }
     }
 
     return files;
@@ -2249,6 +2259,7 @@
       size: file && file.size,
       sha: file && file.sha,
       isDir: file && file.isDir,
+      relativeDir: file && file.relativeDir,
       raw: file && file.raw,
     };
   }
@@ -2741,7 +2752,7 @@
   function buildAria2Options(file, settings) {
     const options = parseAria2Options(settings.aria2ExtraOptionsJson);
     if (settings.aria2DownloadDir && !options.dir) {
-      options.dir = normalizeAria2Dir(settings.aria2DownloadDir);
+      options.dir = joinAria2Dir(settings.aria2DownloadDir, file.relativeDir);
     }
     if (!options.dir) {
       throw new Error('aria2DownloadDir 未设置。按 ASMR 脚本的写法必须显式传 dir；请把它设为 aria2 所在机器/容器内真实可写目录。');
@@ -2773,6 +2784,12 @@
 
   function normalizeAria2Dir(value) {
     return String(value || '').trim().replace(/\\/g, '/').replace(/\/+$/, '');
+  }
+
+  function joinAria2Dir(baseDir, relativeDir) {
+    const base = normalizeAria2Dir(baseDir);
+    const relative = String(relativeDir || '').trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+    return relative ? `${base}/${relative}` : base;
   }
 
   function sanitizeAria2PathSegment(value) {
