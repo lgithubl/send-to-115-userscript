@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.6.3
+// @version      0.6.4
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -1594,7 +1594,16 @@
       name,
       isDir,
       size,
+      raw: summarizeFileEntry(entry),
     };
+  }
+
+  function summarizeFileEntry(entry) {
+    const summary = {};
+    for (const key of ['fid', 'file_id', 'cid', 'id', 'pc', 'pick_code', 'pickcode', 'n', 'name', 'file_name', 's', 'size', 'file_size', 'fs', 'fsize', 'sha1', 'ico', 'class']) {
+      if (entry[key] !== undefined && entry[key] !== null) summary[key] = entry[key];
+    }
+    return summary;
   }
 
   async function pushFilesToAria2(files, settings, historyId) {
@@ -1602,6 +1611,15 @@
     for (const file of files) {
       const download = await waitForDownloadUrl(file, settings, historyId);
       const options = buildAria2Options(file, settings);
+      if (historyId) appendHistoryLog(historyId, 'aria2 addUri request', {
+        name: file.name,
+        url: download.url,
+        options,
+      });
+      console.info('[Send to 115] aria2 addUri request', {
+        url: download.url,
+        options,
+      });
       await aria2AddUri(download.url, options, settings);
       pushed.push(file);
     }
@@ -1619,6 +1637,7 @@
         if (historyId) appendHistoryLog(historyId, 'download url ready', {
           name: file.name,
           attempts,
+          url: download.url,
         });
         return download;
       } catch (error) {
@@ -1633,9 +1652,12 @@
           });
           appendHistoryLog(historyId, 'download url not ready', {
             name: file.name,
+            pickcode: file.pickcode,
             size: file.size,
+            raw: file.raw,
             attempts,
             error: error.message || String(error),
+            response: error.response || null,
           });
         }
         notify('等待 115 文件可下载', `${file.name || file.pickcode}`);
@@ -1647,27 +1669,38 @@
   }
 
   async function getDownloadUrl(file) {
+    const url = API.download(file.pickcode);
     const response = await request({
       method: 'GET',
-      url: API.download(file.pickcode),
+      url,
       headers: {
         'Accept': 'application/json, text/javascript, */*; q=0.01',
         'Referer': 'https://115.com/',
       },
     });
     const json = parseJson(response.responseText);
-    const url = findDownloadUrl(json);
-    if (!json.state || !url) {
+    const downloadUrl = findDownloadUrl(json);
+    console.info('[Send to 115] 115 download response', {
+      file,
+      requestUrl: url,
+      response: json,
+      directUrl: downloadUrl,
+    });
+    if (!json.state || !downloadUrl) {
       const error = new Error(json.error_msg || json.msg || `获取下载链接失败：${file.name || file.pickcode}`);
       error.response = json;
       throw error;
     }
 
-    return { url };
+    console.info('[Send to 115] 115 direct url', downloadUrl);
+    return { url: downloadUrl, response: json };
   }
 
   function isIncompleteUploadError(error) {
-    const message = error && (error.message || String(error));
+    const message = [
+      error && (error.message || String(error)),
+      error && error.response ? objectText(error.response) : '',
+    ].join(' ');
     return /上传不完整|文件上传不完整|not.*complete|incomplete/i.test(message || '');
   }
 
