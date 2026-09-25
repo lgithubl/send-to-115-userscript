@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.6.0
+// @version      0.6.1
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -169,7 +169,8 @@
       background: #fff;
       color: #111827;
       cursor: pointer;
-      padding: 6px 9px;
+      padding: 4px 7px;
+      font-size: 12px;
     }
     .send-to-115-panel button:hover {
       background: #f3f4f6;
@@ -196,15 +197,15 @@
     }
     .send-to-115-actions,
     .send-to-115-panel-row {
-      display: grid;
-      grid-template-columns: 1fr;
-      gap: 7px;
-      align-items: stretch;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
     }
     .send-to-115-actions button,
     .send-to-115-panel-row button {
-      width: 100%;
       text-align: left;
+      white-space: nowrap;
     }
     .send-to-115-section-title {
       margin: 0 0 8px;
@@ -763,6 +764,7 @@
       const controls = document.createElement('div');
       controls.className = 'send-to-115-panel-row';
       appendButton(controls, '刷新状态', () => refreshHistoryStatus(item.id));
+      appendButton(controls, '推 aria2', () => pushHistoryToAria2(item.id));
       appendButton(controls, '重发', () => sendUrls(item.urls, item.overrides || {}));
       appendButton(controls, '重发并推 aria2', () => sendUrls(item.urls, { ...(item.overrides || {}), pushToAria2: true }));
       appendButton(controls, '仅提交 115', () => sendUrls(item.urls, { ...(item.overrides || {}), pushToAria2: false }));
@@ -773,7 +775,7 @@
   }
 
   function getStatusClass(status) {
-    if (status === 'failed' || /failed|失败|error/i.test(status || '')) return 'send-to-115-status-failed';
+    if (status === 'failed' || /failed|失败|error|push failed/i.test(status || '')) return 'send-to-115-status-failed';
     if (status === 'pushed') return 'send-to-115-status-pushed';
     return '';
   }
@@ -993,6 +995,60 @@
     for (const item of history) {
       await refreshHistoryStatus(item.id);
       await sleep(300);
+    }
+  }
+
+  async function pushHistoryToAria2(id) {
+    const item = getHistory().find((entry) => entry.id === id);
+    if (!item) {
+      notify('推送失败', '找不到历史记录');
+      return;
+    }
+
+    const job = reviveJob(item);
+    if (!job) {
+      upsertHistoryItem({
+        id,
+        status: 'no tracking data',
+        error: '这条记录没有保存目录信息，无法直接推 aria2；重发一次后可推送。',
+      });
+      return;
+    }
+
+    try {
+      const settings = getSettings();
+      upsertHistoryItem({ id, status: 'pushing aria2', error: '' });
+      appendHistoryLog(id, 'manual aria2 push started');
+
+      const files = await listDownloadableFiles(job.watchCid || job.wpPathId || '0', settings);
+      const newFiles = files.filter((file) => !job.beforeFileIds.has(file.id));
+      if (!newFiles.length) {
+        throw new Error('目标目录没有发现可推送的新增文件');
+      }
+
+      appendHistoryLog(id, 'manual aria2 files', newFiles.map((file) => ({
+        id: file.id,
+        name: file.name,
+        size: file.size,
+      })));
+      const pushed = await pushFilesToAria2(newFiles, settings);
+      upsertHistoryItem({
+        id,
+        status: 'pushed',
+        pushedCount: pushed.length,
+        error: '',
+        detail: `manual push ${pushed.length} files`,
+      });
+      appendHistoryLog(id, 'manual aria2 push done', { pushed: pushed.length });
+      notify('已推送到 aria2', `${pushed.length} 个文件`);
+    } catch (error) {
+      upsertHistoryItem({
+        id,
+        status: 'push failed',
+        error: error.message || String(error),
+      });
+      appendHistoryLog(id, 'manual aria2 push failed', error.message || String(error));
+      notify('推送 aria2 失败', error.message || String(error));
     }
   }
 
