@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.7.7
+// @version      0.7.8
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -1870,9 +1870,10 @@
     const time = Math.floor(Date.now() / 1000);
     const encoded = m115Encode(JSON.stringify({ pickcode: file.pickcode }), time);
     const cookieHeader = settings && settings.useBrowserCookieHeader
-      ? await getCookieHeader('https://proapi.115.com/')
+      ? await get115CookieHeader()
       : '';
     const cookieNames = getCookieNames(cookieHeader);
+    const sendCookieHeader = isLikelyComplete115CookieHeader(cookieHeader);
     logJson('115 chrome downurl request', {
       file: summarizeDownloadFile(file),
       time,
@@ -1880,7 +1881,9 @@
       payload: { pickcode: file.pickcode },
       dataLength: encoded.data.length,
       cookieNames,
-      cookieHeaderEnabled: Boolean(cookieHeader),
+      cookieHeaderLoaded: Boolean(cookieHeader),
+      cookieHeaderSent: sendCookieHeader,
+      cookieHeaderComplete: sendCookieHeader,
     });
     const response = await request({
       method: 'POST',
@@ -1891,7 +1894,7 @@
         'Content-Type': 'application/x-www-form-urlencoded',
         'Origin': 'https://115.com',
         'Referer': 'https://115.com/',
-        ...(cookieHeader ? { 'Cookie': cookieHeader } : {}),
+        ...(sendCookieHeader ? { 'Cookie': cookieHeader } : {}),
       },
     });
     const json = parseJson(response.responseText);
@@ -1943,36 +1946,65 @@
     };
   }
 
-  async function getCookieHeader(url) {
+  async function get115CookieHeader() {
+    const scopes = [
+      { url: 'https://115.com/' },
+      { url: 'https://webapi.115.com/' },
+      { url: 'https://my.115.com/' },
+      { url: 'https://proapi.115.com/' },
+      { domain: '.115.com' },
+      { domain: '115.com' },
+    ];
+    const cookiesByName = new Map();
+    const scopeResults = [];
+
+    for (const scope of scopes) {
+      const cookies = await listBrowserCookies(scope);
+      scopeResults.push({
+        scope,
+        cookieNames: cookies.map((cookie) => cookie.name).filter(Boolean),
+        count: cookies.length,
+      });
+      for (const cookie of cookies) {
+        if (!cookie || !cookie.name || cookie.value === undefined) continue;
+        const old = cookiesByName.get(cookie.name);
+        if (!old || String(cookie.domain || '').length > String(old.domain || '').length) {
+          cookiesByName.set(cookie.name, cookie);
+        }
+      }
+    }
+
+    const cookies = Array.from(cookiesByName.values());
+    const header = cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join('; ');
+    logJson('browser cookie header loaded', {
+      cookieNames: cookies.map((cookie) => cookie.name).filter(Boolean),
+      complete: isLikelyComplete115CookieHeader(header),
+      count: cookies.length,
+      scopeResults,
+    });
+    return header;
+  }
+
+  async function listBrowserCookies(details) {
     if (typeof GM_cookie === 'undefined' || !GM_cookie || typeof GM_cookie.list !== 'function') {
-      logJson('browser cookie header unavailable', { url, reason: 'GM_cookie unavailable' });
-      return '';
+      logJson('browser cookie header unavailable', { details, reason: 'GM_cookie unavailable' });
+      return [];
     }
 
     return new Promise((resolve) => {
       try {
-        GM_cookie.list({ url }, (cookies, error) => {
+        GM_cookie.list(details, (cookies, error) => {
           if (error) {
-            logJson('browser cookie header unavailable', { url, error: error.message || String(error) });
-            resolve('');
+            logJson('browser cookie scope unavailable', { details, error: error.message || String(error) });
+            resolve([]);
             return;
           }
 
-          const items = Array.isArray(cookies) ? cookies : [];
-          const header = items
-            .filter((cookie) => cookie && cookie.name && cookie.value !== undefined)
-            .map((cookie) => `${cookie.name}=${cookie.value}`)
-            .join('; ');
-          logJson('browser cookie header loaded', {
-            url,
-            cookieNames: items.map((cookie) => cookie.name).filter(Boolean),
-            count: items.length,
-          });
-          resolve(header);
+          resolve(Array.isArray(cookies) ? cookies : []);
         });
       } catch (error) {
-        logJson('browser cookie header unavailable', { url, error: error.message || String(error) });
-        resolve('');
+        logJson('browser cookie scope unavailable', { details, error: error.message || String(error) });
+        resolve([]);
       }
     });
   }
@@ -1982,6 +2014,11 @@
       .split(';')
       .map((part) => part.split('=')[0].trim())
       .filter(Boolean);
+  }
+
+  function isLikelyComplete115CookieHeader(header) {
+    const names = new Set(getCookieNames(header));
+    return names.has('UID') && names.has('SEID') && names.has('KID');
   }
 
   function getChromeDownloadItem(decoded) {
