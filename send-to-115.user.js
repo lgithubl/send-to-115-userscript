@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.8.5
+// @version      0.8.6
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -29,7 +29,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.8.5';
+  const SCRIPT_VERSION = '0.8.6';
 
   const CONFIG = {
     settingsKey: 'send_to_115_settings',
@@ -1852,6 +1852,7 @@
     try {
       return await getChromeDownloadUrl(file, settings);
     } catch (error) {
+      if (isIncompleteUploadError(error)) throw error;
       console.warn('[Send to 115] chrome downurl failed, fallback webapi', error);
     }
 
@@ -1950,7 +1951,9 @@
     });
 
     if (!downloadUrl) {
-      const error = new Error(findErrorMessage(decoded) || findErrorMessage(json) || `chrome downurl 获取下载链接失败：${file.name || file.pickcode}`);
+      const error = isChromeDownurlPending(decoded, directItem)
+        ? makeIncompleteUploadError(`115 文件暂未生成下载链接：${file.name || file.pickcode}`, decoded || json)
+        : new Error(findErrorMessage(decoded) || findErrorMessage(json) || `chrome downurl 获取下载链接失败：${file.name || file.pickcode}`);
       error.response = decoded || json;
       throw error;
     }
@@ -2028,6 +2031,7 @@
       if (!response || !response.ok || !response.response) return null;
       return parseChromeDownurlResult(file, encoded, response.response, 'extensionDownurl');
     } catch (error) {
+      if (isIncompleteUploadError(error)) throw error;
       logJson('115 extension bridge unavailable', {
         file: summarizeDownloadFile(file),
         error: error.message || String(error),
@@ -2064,7 +2068,12 @@
         directUrl: downloadUrl,
       });
 
-      if (!downloadUrl) return null;
+      if (!downloadUrl) {
+        if (isChromeDownurlPending(decoded, directItem)) {
+          throw makeIncompleteUploadError(`115 文件暂未生成下载链接：${file.name || file.pickcode}`, decoded || json);
+        }
+        return null;
+      }
       logJson('115 direct url', {
         source: 'nativeChromeDownurl',
         name: directItem.name || file.name,
@@ -2283,6 +2292,23 @@
       pickcode: String(item.pick_code || item.pickcode || ''),
       raw: item,
     };
+  }
+
+  function isChromeDownurlPending(decoded, directItem) {
+    const item = directItem && directItem.raw;
+    if (!item || typeof item !== 'object') return false;
+    const hasPickcode = Boolean(String(item.pick_code || item.pickcode || '').trim());
+    const explicitNoUrl = item.url === false || item.url === '' || item.url === null;
+    const zeroSize = parseFileSize(item.file_size || item.size || 0) <= 0;
+    const stateOk = !decoded || decoded.state !== false;
+    return stateOk && hasPickcode && explicitNoUrl && zeroSize;
+  }
+
+  function makeIncompleteUploadError(message, response) {
+    const error = new Error(message || '115 文件上传不完整');
+    error.response = response || null;
+    error.incompleteUpload = true;
+    return error;
   }
 
   function findErrorMessage(value) {
@@ -2545,6 +2571,7 @@
   }
 
   function isIncompleteUploadError(error) {
+    if (error && error.incompleteUpload) return true;
     const message = [
       error && (error.message || String(error)),
       error && error.response ? objectText(error.response) : '',
