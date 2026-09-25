@@ -26,13 +26,15 @@ jobs:
           mkdir -p dist/send-to-115-extension
           cp extension/manifest.json extension/background.js extension/content.js dist/send-to-115-extension/
           cp send-to-115.user.js dist/
-          cd dist/send-to-115-extension
-          zip -r ../send-to-115-extension.zip .
 
-      - name: Upload package
+      - name: Upload extension
         uses: actions/upload-artifact@v4
         with:
-          name: send-to-115-package
-          path: |
-            dist/send-to-115-extension.zip
-            dist/send-to-115.user.js
+          name: send-to-115-extension-load-unpacked
+          path: dist/send-to-115-extension/
+
+      - name: Upload userscript
+        uses: actions/upload-artifact@v4
+        with:
+          name: send-to-115-userscript
+          path: dist/send-to-115.user.js

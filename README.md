@@ -40,8 +40,9 @@ Packaged downloads:
 
 1. Open the repository's `Actions` tab.
 2. Run or open the latest `Package` workflow.
-3. Download the `send-to-115-package` artifact.
-4. Unzip `send-to-115-extension.zip`, then load the unzipped folder in `chrome://extensions`.
+3. Download `send-to-115-extension-load-unpacked`.
+4. Unzip it once, then select the unzipped folder in `chrome://extensions` -> `Load unpacked`.
+5. Download `send-to-115-userscript` only when you also want the packaged userscript file.
 
 ## Usage
 
