@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.8.8
+// @version      0.8.9
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -29,7 +29,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.8.8';
+  const SCRIPT_VERSION = '0.8.9';
 
   const CONFIG = {
     settingsKey: 'send_to_115_settings',
@@ -1607,6 +1607,11 @@
       if (item.isDir) {
         if (!settings.includeSubfolders || seenCids.has(item.id)) continue;
         seenCids.add(item.id);
+        if (item.pickcode) {
+          logJson('115 folder-like entry with pickcode, recurse children', {
+            entry: summarizeDownloadFile(item),
+          });
+        }
         files.push(...await listDownloadableFiles(item.id, settings, seenCids));
         continue;
       }
@@ -1725,7 +1730,8 @@
     const id = String(entry.fid || entry.file_id || entry.cid || entry.id || '').trim();
     const pickcode = String(entry.pc || entry.pick_code || entry.pickcode || '').trim();
     const name = String(entry.n || entry.name || entry.file_name || '').trim();
-    const isDir = Boolean(entry.is_dir || entry.isdir || entry.cid && !entry.fid && !pickcode);
+    const sha = String(entry.sha || entry.sha1 || entry.file_sha1 || '').trim();
+    const isDir = Boolean(entry.is_dir || entry.isdir || (entry.cid && !entry.fid && !sha));
     const size = parseFileSize(entry.s || entry.size || entry.file_size || entry.fs || entry.fsize || entry.f_size || 0);
 
     return {
@@ -1734,6 +1740,7 @@
       name,
       isDir,
       size,
+      sha,
       raw: summarizeFileEntry(entry),
     };
   }
@@ -2215,6 +2222,8 @@
       name: file && file.name,
       pickcode: file && file.pickcode,
       size: file && file.size,
+      sha: file && file.sha,
+      isDir: file && file.isDir,
       raw: file && file.raw,
     };
   }
