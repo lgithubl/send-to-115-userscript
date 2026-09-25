@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.8.24
+// @version      0.8.25
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -30,7 +30,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.8.24';
+  const SCRIPT_VERSION = '0.8.25';
 
   const CONFIG = {
     settingsKey: 'send_to_115_settings',
@@ -380,14 +380,15 @@
 
   document.addEventListener('contextmenu', (event) => {
     const urls = collectEventUrls(event);
+    const menuUrls = urls.filter(isContextMenuSendableUrl);
     lastContext = {
-      urls,
+      urls: menuUrls,
       text: getSelectionText() || getLinkHref(event.target) || '',
     };
 
-    if (event.shiftKey || !urls.length) return;
+    if (event.shiftKey || !menuUrls.length) return;
     event.preventDefault();
-    showContextMenu(event.clientX, event.clientY, urls);
+    showContextMenu(event.clientX, event.clientY, menuUrls);
   }, true);
 
   document.addEventListener('click', hideContextMenu);
@@ -418,6 +419,23 @@
       lastContext.text,
       location.href,
     ].filter(Boolean).join('\n'));
+  }
+
+  function isContextMenuSendableUrl(url) {
+    const text = String(url || '').trim();
+    if (/^(magnet:\?|ed2k:\/\/)/i.test(text)) return true;
+
+    if (!/^https?:\/\//i.test(text)) return false;
+    try {
+      const parsed = new URL(text);
+      const path = decodeURIComponent(parsed.pathname || '').toLowerCase();
+      if (/\.(torrent|zip|rar|7z|tar|gz|bz2|xz|iso|apk|exe|dmg|mp4|mkv|avi|mov|wmv|flv|webm|mp3|flac|wav|ass|srt)(?:$|[?#])/i.test(path)) {
+        return true;
+      }
+      return /(?:download|torrent|attachment|file|downurl|dl)(?:[/?#=&_-]|$)/i.test(`${parsed.pathname}${parsed.search}`);
+    } catch (error) {
+      return false;
+    }
   }
 
   function installMangaContextMenuBridge() {
