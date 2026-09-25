@@ -19,6 +19,7 @@ Tampermonkey userscript for sending cloud links to 115 offline download.
 - The top panel also has a compact `推 aria2` button for the latest tracked history item.
 - If 115 reports `文件上传不完整`, pushing waits until the download URL is actually available.
 - Debug logs print the 115 download response, parsed direct URL, and aria2 `addUri` request.
+- Download URLs are resolved through the 115 Chrome/proapi `app/chrome/downurl` path first, with the older webapi path as fallback.
 
 ## Install
 
@@ -114,6 +115,7 @@ This script calls 115 web endpoints with your existing login cookies:
 - `https://webapi.115.com/files/add`
 - `https://webapi.115.com/files`
 - `https://webapi.115.com/files/download`
+- `http://proapi.115.com/app/chrome/downurl`
 - `https://115.com/web/lixian/?ct=lixian&ac=add_task_urls`
 - `https://115.com/web/lixian/?ct=lixian&ac=task_lists`
 

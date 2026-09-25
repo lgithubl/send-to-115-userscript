@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.6.4
+// @version      0.7.0
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -10,6 +10,7 @@
 // @noframes
 // @connect      115.com
 // @connect      my.115.com
+// @connect      proapi.115.com
 // @connect      webapi.115.com
 // @connect      localhost
 // @connect      127.0.0.1
@@ -76,6 +77,7 @@
       return `https://webapi.115.com/files?${params}`;
     },
     download: (pickcode) => `https://webapi.115.com/files/download?pickcode=${encodeURIComponent(pickcode)}&_=${Date.now()}`,
+    chromeDownurl: (time) => `http://proapi.115.com/app/chrome/downurl?t=${time}`,
     addMany: 'https://115.com/web/lixian/?ct=lixian&ac=add_task_urls',
     taskList: 'https://115.com/web/lixian/?ct=lixian&ac=task_lists',
   };
@@ -1669,6 +1671,12 @@
   }
 
   async function getDownloadUrl(file) {
+    try {
+      return await getChromeDownloadUrl(file);
+    } catch (error) {
+      console.warn('[Send to 115] chrome downurl failed, fallback webapi', error);
+    }
+
     const url = API.download(file.pickcode);
     const response = await request({
       method: 'GET',
@@ -1694,6 +1702,311 @@
 
     console.info('[Send to 115] 115 direct url', downloadUrl);
     return { url: downloadUrl, response: json };
+  }
+
+  async function getChromeDownloadUrl(file) {
+    const time = Date.now();
+    const encoded = m115Encode(JSON.stringify({ pickcode: file.pickcode }), time);
+    const response = await request({
+      method: 'POST',
+      url: API.chromeDownurl(time),
+      data: `data=${encodeURIComponent(encoded.data)}`,
+      headers: {
+        'Accept': 'application/json, text/javascript, */*; q=0.01',
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Origin': 'https://115.com',
+        'Referer': 'https://115.com/',
+      },
+    });
+    const json = parseJson(response.responseText);
+    const decoded = json && json.data ? parseJson(m115Decode(json.data, encoded.key)) : json;
+    const downloadUrl = findDownloadUrl(decoded);
+    console.info('[Send to 115] 115 chrome downurl response', {
+      file,
+      response: json,
+      decoded,
+      directUrl: downloadUrl,
+    });
+
+    if (!downloadUrl) {
+      const error = new Error(findErrorMessage(decoded) || findErrorMessage(json) || `chrome downurl 获取下载链接失败：${file.name || file.pickcode}`);
+      error.response = decoded || json;
+      throw error;
+    }
+
+    console.info('[Send to 115] 115 direct url', downloadUrl);
+    return { url: downloadUrl, response: decoded };
+  }
+
+  function findErrorMessage(value) {
+    if (!value || typeof value !== 'object') return '';
+    for (const key of ['error_msg', 'err_msg', 'msg', 'message']) {
+      if (value[key]) return String(value[key]);
+    }
+    for (const nested of Object.values(value)) {
+      if (nested && typeof nested === 'object') {
+        const message = findErrorMessage(nested);
+        if (message) return message;
+      }
+    }
+    return '';
+  }
+
+  const M115_RSA_N = BigInt('0x8686980c0f5a24c4b9d43020cd2c22703ff3f450756529058b1cf88f09b8602136477198a6e2683149659bd122c33592fdb5ad47944ad1ea4d36c6b172aad6338c3bb6ac6227502d010993ac967d1aef00f0c8e038de2e4d3bc2ec368af2e9f10a6f1eda4f7262f136420c07c331b871bf139f74f3010e3c4fe57df3afb71683');
+  const M115_RSA_E = BigInt('0x10001');
+  const M115_KTS = [
+    240, 229, 105, 174, 191, 220, 191, 138, 26, 69, 232, 190, 125, 166, 115, 184,
+    222, 143, 231, 196, 69, 218, 134, 196, 155, 100, 139, 20, 106, 180, 241, 170,
+    56, 1, 53, 158, 38, 105, 44, 134, 0, 107, 79, 165, 54, 52, 98, 166,
+    42, 150, 104, 24, 242, 74, 253, 189, 107, 151, 143, 77, 143, 137, 19, 183,
+    108, 142, 147, 237, 14, 13, 72, 62, 215, 47, 136, 216, 254, 254, 126, 134,
+    80, 149, 79, 209, 235, 131, 38, 52, 219, 102, 123, 156, 126, 157, 122, 129,
+    50, 234, 182, 51, 222, 58, 169, 89, 52, 102, 59, 170, 186, 129, 96, 72,
+    185, 213, 129, 156, 248, 108, 132, 119, 255, 84, 120, 38, 95, 190, 232, 30,
+    54, 159, 52, 128, 92, 69, 44, 155, 118, 213, 27, 143, 204, 195, 184, 245,
+  ];
+  const M115_KEY_S = [0x29, 0x23, 0x21, 0x5E];
+  const M115_KEY_L = [120, 6, 173, 76, 51, 134, 93, 24, 76, 1, 63, 70];
+
+  function m115Encode(src, time) {
+    const key = stringToBytes(md5(`!@###@##${time}DFDR@#@#`));
+    let tmp = stringToBytes(src);
+    tmp = m115SymEncode(tmp, key, null);
+    tmp = key.slice(0, 16).concat(tmp);
+    return {
+      data: m115AsymEncode(tmp),
+      key,
+    };
+  }
+
+  function m115Decode(src, key) {
+    const tmp = m115AsymDecode(stringToBytes(window.atob(src)));
+    return bytesToString(m115SymDecode(tmp.slice(16), key, tmp.slice(0, 16)));
+  }
+
+  function m115GetKey(length, key) {
+    if (key) {
+      return Array.from({ length }, (_, index) => ((key[index] + M115_KTS[length * index]) & 0xff) ^ M115_KTS[length * (length - 1 - index)]);
+    }
+    return length === 12 ? M115_KEY_L.slice() : M115_KEY_S.slice();
+  }
+
+  function xor115(src, key) {
+    const mod4 = src.length % 4;
+    const ret = [];
+    for (let index = 0; index < mod4; index += 1) {
+      ret.push(src[index] ^ key[index % key.length]);
+    }
+    for (let index = mod4; index < src.length; index += 1) {
+      ret.push(src[index] ^ key[(index - mod4) % key.length]);
+    }
+    return ret;
+  }
+
+  function m115SymEncode(src, key1, key2) {
+    const k1 = m115GetKey(4, key1);
+    const k2 = m115GetKey(12, key2);
+    return xor115(xor115(src, k1).reverse(), k2);
+  }
+
+  function m115SymDecode(src, key1, key2) {
+    const k1 = m115GetKey(4, key1);
+    const k2 = m115GetKey(12, key2);
+    return xor115(xor115(src, k2).reverse(), k1);
+  }
+
+  function m115AsymEncode(src) {
+    const chunkSize = 117;
+    let hex = '';
+    for (let offset = 0; offset < src.length; offset += chunkSize) {
+      hex += rsaEncryptBytes(src.slice(offset, offset + chunkSize));
+    }
+    return window.btoa(bytesToString(hexToBytes(hex)));
+  }
+
+  function m115AsymDecode(src) {
+    const chunkSize = 128;
+    let ret = '';
+    for (let offset = 0; offset < src.length; offset += chunkSize) {
+      ret += rsaDecryptBytes(src.slice(offset, offset + chunkSize));
+    }
+    return stringToBytes(ret);
+  }
+
+  function rsaEncryptBytes(bytes) {
+    const padded = pkcs1Pad(bytes, 128);
+    const encrypted = modPow(bytesToBigInt(padded), M115_RSA_E, M115_RSA_N);
+    return bigIntToHex(encrypted, 256);
+  }
+
+  function rsaDecryptBytes(bytes) {
+    const decrypted = modPow(bytesToBigInt(bytes), M115_RSA_E, M115_RSA_N);
+    const hex = decrypted.toString(16).length % 2 ? `0${decrypted.toString(16)}` : decrypted.toString(16);
+    const chars = bytesToString(hexToBytes(hex));
+    let index = 1;
+    while (index < chars.length && chars.charCodeAt(index) !== 0) index += 1;
+    return chars.slice(index + 1);
+  }
+
+  function pkcs1Pad(bytes, length) {
+    if (length < bytes.length + 11) throw new Error('m115 RSA block too long');
+    const padded = new Array(length);
+    let target = length;
+    for (let index = bytes.length - 1; index >= 0 && target > 0; index -= 1) {
+      padded[--target] = bytes[index];
+    }
+    padded[--target] = 0;
+    while (target > 2) padded[--target] = randomNonZeroByte();
+    padded[--target] = 2;
+    padded[--target] = 0;
+    return padded;
+  }
+
+  function randomNonZeroByte() {
+    const buffer = new Uint8Array(1);
+    if (window.crypto && window.crypto.getRandomValues) {
+      do window.crypto.getRandomValues(buffer);
+      while (buffer[0] === 0);
+      return buffer[0];
+    }
+    let value = 0;
+    while (!value) value = Math.floor(Math.random() * 256);
+    return value;
+  }
+
+  function modPow(base, exponent, modulus) {
+    let result = 1n;
+    let current = base % modulus;
+    let exp = exponent;
+    while (exp > 0n) {
+      if (exp & 1n) result = (result * current) % modulus;
+      exp >>= 1n;
+      current = (current * current) % modulus;
+    }
+    return result;
+  }
+
+  function bytesToBigInt(bytes) {
+    return BigInt(`0x${bytes.map((byte) => byte.toString(16).padStart(2, '0')).join('') || '0'}`);
+  }
+
+  function bigIntToHex(value, length) {
+    return value.toString(16).padStart(length, '0');
+  }
+
+  function hexToBytes(hex) {
+    const bytes = [];
+    for (let index = 0; index < hex.length; index += 2) {
+      bytes.push(parseInt(hex.slice(index, index + 2), 16));
+    }
+    return bytes;
+  }
+
+  function stringToBytes(value) {
+    return Array.from(String(value), (char) => char.charCodeAt(0));
+  }
+
+  function bytesToString(bytes) {
+    return bytes.map((byte) => String.fromCharCode(byte)).join('');
+  }
+
+  function md5(input) {
+    const rotateLeft = (value, shift) => (value << shift) | (value >>> (32 - shift));
+    const add = (left, right) => (left + right) >>> 0;
+    const cmn = (q, a, b, x, s, t) => add(rotateLeft(add(add(a, q), add(x, t)), s), b);
+    const ff = (a, b, c, d, x, s, t) => cmn((b & c) | (~b & d), a, b, x, s, t);
+    const gg = (a, b, c, d, x, s, t) => cmn((b & d) | (c & ~d), a, b, x, s, t);
+    const hh = (a, b, c, d, x, s, t) => cmn(b ^ c ^ d, a, b, x, s, t);
+    const ii = (a, b, c, d, x, s, t) => cmn(c ^ (b | ~d), a, b, x, s, t);
+    const text = unescape(encodeURIComponent(input));
+    const words = [];
+    for (let index = 0; index < text.length; index += 1) {
+      words[index >> 2] = (words[index >> 2] || 0) | (text.charCodeAt(index) << ((index % 4) * 8));
+    }
+    words[text.length >> 2] = (words[text.length >> 2] || 0) | (0x80 << ((text.length % 4) * 8));
+    words[(((text.length + 8) >> 6) << 4) + 14] = text.length * 8;
+
+    let a = 0x67452301;
+    let b = 0xefcdab89;
+    let c = 0x98badcfe;
+    let d = 0x10325476;
+
+    for (let index = 0; index < words.length; index += 16) {
+      const oldA = a;
+      const oldB = b;
+      const oldC = c;
+      const oldD = d;
+      a = ff(a, b, c, d, words[index + 0] || 0, 7, 0xd76aa478);
+      d = ff(d, a, b, c, words[index + 1] || 0, 12, 0xe8c7b756);
+      c = ff(c, d, a, b, words[index + 2] || 0, 17, 0x242070db);
+      b = ff(b, c, d, a, words[index + 3] || 0, 22, 0xc1bdceee);
+      a = ff(a, b, c, d, words[index + 4] || 0, 7, 0xf57c0faf);
+      d = ff(d, a, b, c, words[index + 5] || 0, 12, 0x4787c62a);
+      c = ff(c, d, a, b, words[index + 6] || 0, 17, 0xa8304613);
+      b = ff(b, c, d, a, words[index + 7] || 0, 22, 0xfd469501);
+      a = ff(a, b, c, d, words[index + 8] || 0, 7, 0x698098d8);
+      d = ff(d, a, b, c, words[index + 9] || 0, 12, 0x8b44f7af);
+      c = ff(c, d, a, b, words[index + 10] || 0, 17, 0xffff5bb1);
+      b = ff(b, c, d, a, words[index + 11] || 0, 22, 0x895cd7be);
+      a = ff(a, b, c, d, words[index + 12] || 0, 7, 0x6b901122);
+      d = ff(d, a, b, c, words[index + 13] || 0, 12, 0xfd987193);
+      c = ff(c, d, a, b, words[index + 14] || 0, 17, 0xa679438e);
+      b = ff(b, c, d, a, words[index + 15] || 0, 22, 0x49b40821);
+      a = gg(a, b, c, d, words[index + 1] || 0, 5, 0xf61e2562);
+      d = gg(d, a, b, c, words[index + 6] || 0, 9, 0xc040b340);
+      c = gg(c, d, a, b, words[index + 11] || 0, 14, 0x265e5a51);
+      b = gg(b, c, d, a, words[index + 0] || 0, 20, 0xe9b6c7aa);
+      a = gg(a, b, c, d, words[index + 5] || 0, 5, 0xd62f105d);
+      d = gg(d, a, b, c, words[index + 10] || 0, 9, 0x02441453);
+      c = gg(c, d, a, b, words[index + 15] || 0, 14, 0xd8a1e681);
+      b = gg(b, c, d, a, words[index + 4] || 0, 20, 0xe7d3fbc8);
+      a = gg(a, b, c, d, words[index + 9] || 0, 5, 0x21e1cde6);
+      d = gg(d, a, b, c, words[index + 14] || 0, 9, 0xc33707d6);
+      c = gg(c, d, a, b, words[index + 3] || 0, 14, 0xf4d50d87);
+      b = gg(b, c, d, a, words[index + 8] || 0, 20, 0x455a14ed);
+      a = gg(a, b, c, d, words[index + 13] || 0, 5, 0xa9e3e905);
+      d = gg(d, a, b, c, words[index + 2] || 0, 9, 0xfcefa3f8);
+      c = gg(c, d, a, b, words[index + 7] || 0, 14, 0x676f02d9);
+      b = gg(b, c, d, a, words[index + 12] || 0, 20, 0x8d2a4c8a);
+      a = hh(a, b, c, d, words[index + 5] || 0, 4, 0xfffa3942);
+      d = hh(d, a, b, c, words[index + 8] || 0, 11, 0x8771f681);
+      c = hh(c, d, a, b, words[index + 11] || 0, 16, 0x6d9d6122);
+      b = hh(b, c, d, a, words[index + 14] || 0, 23, 0xfde5380c);
+      a = hh(a, b, c, d, words[index + 1] || 0, 4, 0xa4beea44);
+      d = hh(d, a, b, c, words[index + 4] || 0, 11, 0x4bdecfa9);
+      c = hh(c, d, a, b, words[index + 7] || 0, 16, 0xf6bb4b60);
+      b = hh(b, c, d, a, words[index + 10] || 0, 23, 0xbebfbc70);
+      a = hh(a, b, c, d, words[index + 13] || 0, 4, 0x289b7ec6);
+      d = hh(d, a, b, c, words[index + 0] || 0, 11, 0xeaa127fa);
+      c = hh(c, d, a, b, words[index + 3] || 0, 16, 0xd4ef3085);
+      b = hh(b, c, d, a, words[index + 6] || 0, 23, 0x04881d05);
+      a = hh(a, b, c, d, words[index + 9] || 0, 4, 0xd9d4d039);
+      d = hh(d, a, b, c, words[index + 12] || 0, 11, 0xe6db99e5);
+      c = hh(c, d, a, b, words[index + 15] || 0, 16, 0x1fa27cf8);
+      b = hh(b, c, d, a, words[index + 2] || 0, 23, 0xc4ac5665);
+      a = ii(a, b, c, d, words[index + 0] || 0, 6, 0xf4292244);
+      d = ii(d, a, b, c, words[index + 7] || 0, 10, 0x432aff97);
+      c = ii(c, d, a, b, words[index + 14] || 0, 15, 0xab9423a7);
+      b = ii(b, c, d, a, words[index + 5] || 0, 21, 0xfc93a039);
+      a = ii(a, b, c, d, words[index + 12] || 0, 6, 0x655b59c3);
+      d = ii(d, a, b, c, words[index + 3] || 0, 10, 0x8f0ccc92);
+      c = ii(c, d, a, b, words[index + 10] || 0, 15, 0xffeff47d);
+      b = ii(b, c, d, a, words[index + 1] || 0, 21, 0x85845dd1);
+      a = ii(a, b, c, d, words[index + 8] || 0, 6, 0x6fa87e4f);
+      d = ii(d, a, b, c, words[index + 15] || 0, 10, 0xfe2ce6e0);
+      c = ii(c, d, a, b, words[index + 6] || 0, 15, 0xa3014314);
+      b = ii(b, c, d, a, words[index + 13] || 0, 21, 0x4e0811a1);
+      a = ii(a, b, c, d, words[index + 4] || 0, 6, 0xf7537e82);
+      d = ii(d, a, b, c, words[index + 11] || 0, 10, 0xbd3af235);
+      c = ii(c, d, a, b, words[index + 2] || 0, 15, 0x2ad7d2bb);
+      b = ii(b, c, d, a, words[index + 9] || 0, 21, 0xeb86d391);
+      a = add(a, oldA);
+      b = add(b, oldB);
+      c = add(c, oldC);
+      d = add(d, oldD);
+    }
+
+    return [a, b, c, d].map((word) => [0, 8, 16, 24].map((shift) => ((word >>> shift) & 0xff).toString(16).padStart(2, '0')).join('')).join('');
   }
 
   function isIncompleteUploadError(error) {
