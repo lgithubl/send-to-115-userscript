@@ -34,7 +34,7 @@ Optional bridge extension:
 4. Select the repository's `extension/` folder.
 5. Reload the page that uses the userscript.
 
-The extension is intentionally minimal. It does not submit 115 tasks, render UI, or push aria2. It only accepts a userscript bridge request, performs the 115 `app/chrome/downurl` request in the extension background context, and returns the raw JSON response to the userscript for normal handling.
+The extension is intentionally minimal. It does not submit 115 tasks, render UI, or push aria2. It only accepts a userscript bridge request, performs the 115 `app/chrome/downurl` request from an open 115 tab when possible, and returns the raw JSON response to the userscript for normal handling. Keep one logged-in `https://115.com/` tab open in the same Chrome profile.
 
 Packaged downloads:
 

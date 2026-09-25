@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.8.2
+// @version      0.8.3
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -29,7 +29,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.8.2';
+  const SCRIPT_VERSION = '0.8.3';
 
   const CONFIG = {
     settingsKey: 'send_to_115_settings',
@@ -1995,7 +1995,10 @@
         ok: response && response.ok,
         error: response && response.error,
         status: response && response.status,
+        source: response && response.source,
         cookieNames: response && response.cookieNames,
+        cookieDiagnostics: response && response.cookieDiagnostics,
+        tabError: response && response.tabError,
         hasResponse: Boolean(response && response.response),
       });
 
