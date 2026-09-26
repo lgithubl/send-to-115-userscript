@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.8.29
+// @version      0.8.30
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -30,7 +30,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.8.29';
+  const SCRIPT_VERSION = '0.8.30';
 
   const CONFIG = {
     settingsKey: 'send_to_115_settings',
@@ -1486,7 +1486,8 @@
       appendHistoryLog(id, 'manual refresh started');
 
       const settings = getSettings();
-      const taskResult = await listOfflineTasksForMatcher(matcher, job, Number(job.expectedCount || (item.urls || []).length || 1), settings);
+      const expectedCount = Math.max(1, Number(job.expectedCount || (item.urls || []).length || 1));
+      const taskResult = await listOfflineTasksForMatcher(matcher, job, expectedCount, settings);
       const tasks = taskResult.tasks;
       const matched = tasks.filter((task) => matchOfflineTask(task, matcher, job));
       const done = matched.filter(isOfflineTaskDone);
@@ -1503,8 +1504,11 @@
       const pageText = taskResult.meta && taskResult.meta.successPagesFetched > 1
         ? ` · succ pages ${taskResult.meta.successPagesFetched}/${taskResult.meta.pageCount || '?'}`
         : '';
+      const matchedText = matched.length < expectedCount
+        ? ` · matched ${matched.length}/${expectedCount}`
+        : '';
       const status = matched.length
-        ? `offline ${done.length}/${matched.length}${failed.length ? ` failed ${failed.length}` : ''}${pageText} · ${filesText}`
+        ? `offline ${done.length}/${expectedCount}${matchedText}${failed.length ? ` failed ${failed.length}` : ''}${pageText} · ${filesText}`
         : `no task match${pageText} · ${filesText}`;
 
       upsertHistoryItem({
@@ -1517,6 +1521,7 @@
         matched: matched.length,
         done: done.length,
         failed: failed.length,
+        expectedCount,
         taskList: taskResult.meta,
         files: newFiles.length,
         pendingFiles: pendingFiles.length,
