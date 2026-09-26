@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.8.25
+// @version      0.8.26
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -30,7 +30,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.8.25';
+  const SCRIPT_VERSION = '0.8.26';
 
   const CONFIG = {
     settingsKey: 'send_to_115_settings',
@@ -499,8 +499,10 @@
     const copyLinks = document.querySelectorAll('.js-magnet[data-clipboard-text]');
     const episodeTables = document.querySelectorAll('.episode-table');
     const copySelectedButtons = document.querySelectorAll('.episode-table .js-copy-selected');
+    const homepageSubgroupRows = document.querySelectorAll('.js-expand_bangumi-subgroup');
     let insertedSingle = 0;
     let insertedBatch = 0;
+    let insertedHomepageBatch = 0;
 
     copyLinks.forEach((copyLink) => {
       if (copyLink.dataset.sendTo115Injected === '1') return;
@@ -545,12 +547,28 @@
       updateMikanBatchButton(table);
     });
 
+    homepageSubgroupRows.forEach((row) => {
+      if (row.dataset.sendTo115HomepageBatchInjected === '1') return;
+
+      const subscribeButton = row.querySelector('.js-subscribe_bangumi[data-bangumiid][data-subtitlegroupid]');
+      if (!subscribeButton) return;
+
+      row.dataset.sendTo115HomepageBatchInjected = '1';
+      let button = null;
+      button = createMikanButton('批量推115', () => sendMikanHomepageSubgroup(row, button));
+      button.classList.add('send-to-115-mikan-homepage-batch');
+      subscribeButton.insertAdjacentElement('afterend', button);
+      insertedHomepageBatch += 1;
+    });
+
     debugLog('mikan buttons scan', {
       copyLinks: copyLinks.length,
       episodeTables: episodeTables.length,
       copySelectedButtons: copySelectedButtons.length,
+      homepageSubgroupRows: homepageSubgroupRows.length,
       insertedSingle,
       insertedBatch,
+      insertedHomepageBatch,
     });
   }
 
@@ -562,9 +580,117 @@
     button.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
-      onClick();
+      Promise.resolve(onClick()).catch((error) => {
+        console.error('[Send to 115] mikan button failed', error);
+        notify('发送到 115 失败', error.message || String(error));
+      });
     });
     return button;
+  }
+
+  async function sendMikanHomepageSubgroup(row, button) {
+    const subscribeButton = row.querySelector('.js-subscribe_bangumi[data-bangumiid][data-subtitlegroupid]');
+    const bangumiId = subscribeButton && subscribeButton.getAttribute('data-bangumiid');
+    const subtitleGroupId = subscribeButton && subscribeButton.getAttribute('data-subtitlegroupid');
+    const subgroupName = getMikanHomepageSubgroupName(row);
+    const bangumiName = getMikanHomepageBangumiName(row, bangumiId);
+
+    if (!bangumiId || !subtitleGroupId) {
+      notify('发送到 115', '未识别到番剧或字幕组 ID');
+      return;
+    }
+
+    const originalText = button ? button.textContent : '';
+    if (button) {
+      button.disabled = true;
+      button.textContent = '读取中...';
+    }
+
+    try {
+      const urls = await fetchMikanSubgroupMagnets(bangumiId, subtitleGroupId);
+      debugLog('mikan homepage subgroup magnets', {
+        bangumiId,
+        subtitleGroupId,
+        bangumiName,
+        subgroupName,
+        urls: urls.length,
+      });
+
+      if (!urls.length) {
+        notify('发送到 115', `${subgroupName || '该字幕组'} 未找到磁链`);
+        return;
+      }
+
+      const aria2SubDir = [bangumiName]
+        .filter(Boolean)
+        .map(sanitizeAria2PathSegment)
+        .join('/');
+      sendUrls(urls, aria2SubDir ? { aria2SubDir } : {});
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent = originalText;
+      }
+    }
+  }
+
+  async function fetchMikanSubgroupMagnets(bangumiId, subtitleGroupId) {
+    const params = new URLSearchParams({
+      bangumiId: String(bangumiId),
+      subtitleGroupId: String(subtitleGroupId),
+      take: '999',
+    });
+    const response = await request({
+      method: 'GET',
+      url: `${location.origin}/Home/ExpandEpisodeTable?${params}`,
+      headers: {
+        'Accept': 'text/html, */*; q=0.01',
+        'Referer': location.href,
+        'X-Requested-With': 'XMLHttpRequest',
+      },
+    });
+
+    const doc = new DOMParser().parseFromString(response.responseText || '', 'text/html');
+    const values = Array.from(doc.querySelectorAll('[data-magnet], .js-magnet[data-clipboard-text]'))
+      .flatMap((node) => [
+        node.getAttribute('data-magnet') || '',
+        node.getAttribute('data-clipboard-text') || '',
+      ]);
+
+    return extractLinks(values.join('\n'))
+      .filter((url) => /^magnet:\?/i.test(url));
+  }
+
+  function getMikanHomepageSubgroupName(row) {
+    const nameNode = row.querySelector('.tag-res-name');
+    return nameNode
+      ? (nameNode.getAttribute('title') || nameNode.textContent || '').trim()
+      : '';
+  }
+
+  function getMikanHomepageBangumiName(row, bangumiId) {
+    const containers = [
+      row.closest('.js-expand_bangumi-content'),
+      row.closest('.res-left'),
+      row.closest('.an-res-row'),
+      row.closest('.res-ul'),
+      row.closest('ul'),
+    ].filter(Boolean);
+
+    for (const container of containers) {
+      const titleNode = container.querySelector('.res-ul-title-text, .bangumi-title');
+      const title = titleNode && titleNode.textContent.trim();
+      if (title) return title;
+
+      if (bangumiId) {
+        const link = Array.from(container.querySelectorAll('a[href*="/Home/Bangumi/"]'))
+          .find((item) => (item.getAttribute('href') || '').includes(`/Home/Bangumi/${bangumiId}`));
+        const linkText = link && link.textContent.trim();
+        if (linkText) return linkText;
+      }
+    }
+
+    return getMikanBangumiName();
   }
 
   function getMikanSelectedMagnets(table) {
