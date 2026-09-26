@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.8.32
+// @version      0.8.33
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -30,7 +30,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.8.32';
+  const SCRIPT_VERSION = '0.8.33';
 
   const CONFIG = {
     settingsKey: 'send_to_115_settings',
@@ -1128,11 +1128,6 @@
     historyTitle.textContent = '最近发送';
     historySection.appendChild(historyTitle);
 
-    const history = document.createElement('div');
-    history.className = 'send-to-115-history';
-    renderHistoryList(history);
-    historySection.appendChild(history);
-
     const historyActions = document.createElement('div');
     historyActions.className = 'send-to-115-panel-row';
     appendButton(historyActions, '刷新全部状态', () => refreshAllHistoryStatuses());
@@ -1142,6 +1137,11 @@
       renderPanel();
     });
     historySection.appendChild(historyActions);
+
+    const history = document.createElement('div');
+    history.className = 'send-to-115-history';
+    renderHistoryList(history);
+    historySection.appendChild(history);
     body.appendChild(historySection);
 
     panel.appendChild(body);
