@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.8.27
+// @version      0.8.28
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -30,7 +30,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.8.27';
+  const SCRIPT_VERSION = '0.8.28';
 
   const CONFIG = {
     settingsKey: 'send_to_115_settings',
@@ -1396,8 +1396,8 @@
         pendingFiles: pendingFiles.map((file) => summarizeDownloadFile(file)),
       });
       const filesText = `files ${newFiles.length}${pendingFiles.length ? `, pending ${pendingFiles.length}` : ''}`;
-      const pageText = taskResult.meta && taskResult.meta.pagesFetched > 1
-        ? ` · pages ${taskResult.meta.pagesFetched}/${taskResult.meta.pageCount || '?'}`
+      const pageText = taskResult.meta && taskResult.meta.successPagesFetched > 1
+        ? ` · succ pages ${taskResult.meta.successPagesFetched}/${taskResult.meta.pageCount || '?'}`
         : '';
       const status = matched.length
         ? `offline ${done.length}/${matched.length}${failed.length ? ` failed ${failed.length}` : ''}${pageText} · ${filesText}`
@@ -1764,8 +1764,8 @@
       const matched = tasks.filter((task) => matchOfflineTask(task, matcher, job));
       const done = matched.filter(isOfflineTaskDone);
       const failed = matched.filter(isOfflineTaskFailed);
-      const pageText = taskResult.meta && taskResult.meta.pagesFetched > 1
-        ? ` · pages ${taskResult.meta.pagesFetched}/${taskResult.meta.pageCount || '?'}`
+      const pageText = taskResult.meta && taskResult.meta.successPagesFetched > 1
+        ? ` · succ pages ${taskResult.meta.successPagesFetched}/${taskResult.meta.pageCount || '?'}`
         : '';
       const statusText = matched.length
         ? `offline ${done.length}/${expectedCount} done · matched ${matched.length}${failed.length ? ` failed ${failed.length}` : ''}${pageText}`
@@ -1839,16 +1839,19 @@
     const auth = { ...token, userId };
     const allTasks = [];
     const pages = [];
-    let pageCount = 1;
-    let totalCount = 0;
+    let successPageCount = 1;
+    let successTotalCount = 0;
     let stopReason = 'max_pages';
 
-    for (let page = 1; page <= maxPages && page <= pageCount; page += 1) {
-      const json = await fetchOfflineTaskPageByMethod(method, page, auth);
-      pageCount = clampNumber(json.page_count, 1, 100000, pageCount);
-      totalCount = Number(json.count || totalCount || 0);
+    const addPage = async (stat, page) => {
+      const json = await fetchOfflineTaskPageByMethod(method, page, auth, stat);
+      const pageCount = clampNumber(json.page_count, 1, 100000, 1);
+      const totalCount = Number(json.count || 0);
 
-      const pageTasks = extractOfflineTasks(json);
+      const pageTasks = extractOfflineTasks(json).map((task) => ({
+        ...task,
+        __sendTo115TaskListStat: String(stat || ''),
+      }));
       allTasks.push(...pageTasks);
 
       const pageMatched = pageTasks.filter((task) => matchOfflineTask(task, matcher, job));
@@ -1863,6 +1866,7 @@
 
       pages.push({
         page,
+        stat,
         pageTasks: pageTasks.length,
         matched: pageMatched.length,
         done: pageDone.length,
@@ -1872,21 +1876,55 @@
         totalDone: done.length,
       });
 
-      if (failed.length) {
-        stopReason = page === 1 ? 'page1_failed' : 'failed';
-        break;
+      return {
+        pageCount,
+        totalCount,
+        pageMatched,
+        matched,
+        done,
+        failed,
+        pending,
+      };
+    };
+
+    const successFirst = await addPage('11', 1);
+    successPageCount = successFirst.pageCount;
+    successTotalCount = successFirst.totalCount;
+
+    const pendingFirst = await addPage('12', 1);
+    const failedFirst = await addPage('9', 1);
+    const firstPassTasks = dedupeObjects(allTasks);
+    let matched = firstPassTasks.filter((task) => matchOfflineTask(task, matcher, job));
+    let done = matched.filter(isOfflineTaskDone);
+    let failed = matched.filter(isOfflineTaskFailed);
+    let pending = matched.filter((task) => !isOfflineTaskDone(task) && !isOfflineTaskFailed(task));
+
+    if (failed.length || failedFirst.pageMatched.length) {
+      stopReason = 'failed_page1';
+    } else if (pending.length || pendingFirst.pageMatched.length) {
+      stopReason = 'pending_page1';
+    } else if (done.length >= targetCount && matched.length >= targetCount) {
+      stopReason = 'done_enough';
+    } else {
+      for (let page = 2; page <= maxPages && page <= successPageCount; page += 1) {
+        await addPage('11', page);
+        const uniqueTasks = dedupeObjects(allTasks);
+        matched = uniqueTasks.filter((task) => matchOfflineTask(task, matcher, job));
+        done = matched.filter(isOfflineTaskDone);
+        failed = matched.filter(isOfflineTaskFailed);
+
+        if (done.length >= targetCount && matched.length >= targetCount) {
+          stopReason = 'done_enough';
+          break;
+        }
+        if (page >= successPageCount) {
+          stopReason = 'all_success_pages';
+          break;
+        }
       }
-      if (page === 1 && pending.length) {
-        stopReason = 'page1_pending';
-        break;
-      }
-      if (done.length >= targetCount && matched.length >= targetCount) {
-        stopReason = 'done_enough';
-        break;
-      }
-      if (page >= pageCount) {
-        stopReason = 'all_pages';
-        break;
+
+      if (stopReason === 'max_pages' && maxPages >= successPageCount) {
+        stopReason = 'all_success_pages';
       }
     }
 
@@ -1897,19 +1935,21 @@
         method,
         maxPages,
         pagesFetched: pages.length,
-        pageCount,
-        totalCount,
+        successPagesFetched: pages.filter((page) => page.stat === '11').length,
+        pageCount: successPageCount,
+        totalCount: successTotalCount,
         stopReason,
         pages,
       },
     };
   }
 
-  async function fetchOfflineTaskPageByMethod(method, page, auth) {
+  async function fetchOfflineTaskPageByMethod(method, page, auth, stat) {
     const token = auth || await getSignToken();
     const userId = token.userId || await getOptionalUserId();
     const params = new URLSearchParams();
     params.set('page', String(page || 1));
+    if (stat) params.set('stat', String(stat));
     params.set('uid', userId || '');
     params.set('sign', token.sign);
     params.set('time', token.time);
@@ -1998,6 +2038,8 @@
   }
 
   function isOfflineTaskDone(task) {
+    const taskListStat = String(task && task.__sendTo115TaskListStat || '');
+    if (taskListStat && taskListStat !== '11') return false;
     const status = String(findFirstByKey(task, /^status$/i) || '').toLowerCase();
     const displayStatus = String(findFirstByKey(task, /^display_status$/i) || '').toLowerCase();
     const statusText = String(findFirstByKey(task, /^status_text$/i) || '').trim();
@@ -2016,6 +2058,8 @@
   }
 
   function isOfflineTaskFailed(task) {
+    const taskListStat = String(task && task.__sendTo115TaskListStat || '');
+    if (taskListStat === '9') return true;
     const displayStatus = String(findFirstByKey(task, /^display_status$/i) || '').toLowerCase();
     const statusText = String(findFirstByKey(task, /^status_text$/i) || '').toLowerCase();
     const status = String(findFirstByKey(task, /^status$/i) || '').toLowerCase();
@@ -2040,6 +2084,7 @@
   function summarizeOfflineTask(task) {
     return {
       name: findFirstByKey(task, /^(name|file_name|filename|n)$/i),
+      stat: task && task.__sendTo115TaskListStat,
       hash: findFirstByKey(task, /^(info_hash|hash)$/i),
       status: findFirstByKey(task, /^status$/i),
       display_status: findFirstByKey(task, /^display_status$/i),
