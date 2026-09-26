@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.8.26
+// @version      0.8.27
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -30,7 +30,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.8.26';
+  const SCRIPT_VERSION = '0.8.27';
 
   const CONFIG = {
     settingsKey: 'send_to_115_settings',
@@ -58,6 +58,7 @@
     aria2MaxConnectionPerServer: 4,
     aria2UserAgent: navigator.userAgent,
     fastPollIntervalsSec: [5, 10, 10, 10],
+    maxTaskListPages: 10,
     pollIntervalMs: 30000,
     pollTimeoutMs: 7200000,
     stableRounds: 2,
@@ -537,7 +538,7 @@
           return;
         }
         const aria2SubDir = getMikanBatchAria2SubDir(table);
-        sendUrls(urls, aria2SubDir ? { aria2SubDir } : {});
+        sendUrls(urls, aria2SubDir ? { aria2SubDir, taskLabel: aria2SubDir } : {});
       });
       button.classList.add('send-to-115-mikan-batch');
       copySelected.insertAdjacentElement('afterend', button);
@@ -625,7 +626,7 @@
         .filter(Boolean)
         .map(sanitizeAria2PathSegment)
         .join('/');
-      sendUrls(urls, aria2SubDir ? { aria2SubDir } : {});
+      sendUrls(urls, aria2SubDir ? { aria2SubDir, taskLabel: bangumiName } : {});
     } finally {
       if (button) {
         button.disabled = false;
@@ -874,6 +875,7 @@
       aria2MaxConnectionPerServer: clampNumber(settings.aria2MaxConnectionPerServer, 0, 64, DEFAULT_SETTINGS.aria2MaxConnectionPerServer),
       aria2UserAgent: String(settings.aria2UserAgent || navigator.userAgent).trim(),
       fastPollIntervalsSec: normalizeFastPollIntervalsSec(settings.fastPollIntervalsSec),
+      maxTaskListPages: clampNumber(settings.maxTaskListPages, 1, 100, DEFAULT_SETTINGS.maxTaskListPages),
       pollIntervalMs: clampNumber(settings.pollIntervalMs, 5000, 600000, DEFAULT_SETTINGS.pollIntervalMs),
       pollTimeoutMs: clampNumber(settings.pollTimeoutMs, 60000, 86400000, DEFAULT_SETTINGS.pollTimeoutMs),
       stableRounds: clampNumber(settings.stableRounds, 1, 20, DEFAULT_SETTINGS.stableRounds),
@@ -1080,6 +1082,7 @@
       aria2SendCookie: true,
       aria2MaxConnectionPerServer: 4,
       fastPollIntervalsSec: [5, 10, 10, 10],
+      maxTaskListPages: 10,
       pollIntervalMs: 30000,
       pollTimeoutMs: 7200000,
       stableRounds: 2,
@@ -1378,11 +1381,12 @@
       upsertHistoryItem({ id, status: 'refreshing', error: '', detail: '' });
       appendHistoryLog(id, 'manual refresh started');
 
-      const tasks = await listOfflineTasks();
+      const settings = getSettings();
+      const taskResult = await listOfflineTasksForMatcher(matcher, job, Number(job.expectedCount || (item.urls || []).length || 1), settings);
+      const tasks = taskResult.tasks;
       const matched = tasks.filter((task) => matchOfflineTask(task, matcher, job));
       const done = matched.filter(isOfflineTaskDone);
       const failed = matched.filter(isOfflineTaskFailed);
-      const settings = getSettings();
       const files = await listDownloadableFiles(job.watchCid || job.wpPathId || '0', settings);
       const newFiles = files.filter((file) => !job.beforeFileIds.has(file.id));
       const pendingFiles = newFiles.filter((file) => isPendingFile(file, settings));
@@ -1392,9 +1396,12 @@
         pendingFiles: pendingFiles.map((file) => summarizeDownloadFile(file)),
       });
       const filesText = `files ${newFiles.length}${pendingFiles.length ? `, pending ${pendingFiles.length}` : ''}`;
+      const pageText = taskResult.meta && taskResult.meta.pagesFetched > 1
+        ? ` · pages ${taskResult.meta.pagesFetched}/${taskResult.meta.pageCount || '?'}`
+        : '';
       const status = matched.length
-        ? `offline ${done.length}/${matched.length}${failed.length ? ` failed ${failed.length}` : ''} · ${filesText}`
-        : `no task match · ${filesText}`;
+        ? `offline ${done.length}/${matched.length}${failed.length ? ` failed ${failed.length}` : ''}${pageText} · ${filesText}`
+        : `no task match${pageText} · ${filesText}`;
 
       upsertHistoryItem({
         id,
@@ -1406,6 +1413,7 @@
         matched: matched.length,
         done: done.length,
         failed: failed.length,
+        taskList: taskResult.meta,
         files: newFiles.length,
         pendingFiles: pendingFiles.length,
       });
@@ -1658,7 +1666,7 @@
     const parentCid = containerName
       ? await ensureFolder(baseParentCid, containerName)
       : baseParentCid;
-    const folderName = makeRandomFolderName(settings.randomFolderPrefix);
+    const folderName = makeRandomFolderName(settings.randomFolderPrefix, settings.taskLabel);
     const folderCid = await createFolder(parentCid, folderName);
 
     return {
@@ -1751,12 +1759,16 @@
     let pollIndex = 0;
 
     while (Date.now() - startedAt < Number(settings.pollTimeoutMs)) {
-      const tasks = await listOfflineTasks();
+      const taskResult = await listOfflineTasksForMatcher(matcher, job, expectedCount, settings);
+      const tasks = taskResult.tasks;
       const matched = tasks.filter((task) => matchOfflineTask(task, matcher, job));
       const done = matched.filter(isOfflineTaskDone);
       const failed = matched.filter(isOfflineTaskFailed);
+      const pageText = taskResult.meta && taskResult.meta.pagesFetched > 1
+        ? ` · pages ${taskResult.meta.pagesFetched}/${taskResult.meta.pageCount || '?'}`
+        : '';
       const statusText = matched.length
-        ? `offline ${done.length}/${expectedCount} done · matched ${matched.length}${failed.length ? ` failed ${failed.length}` : ''}`
+        ? `offline ${done.length}/${expectedCount} done · matched ${matched.length}${failed.length ? ` failed ${failed.length}` : ''}${pageText}`
         : 'offline matching';
 
       upsertHistoryItem({
@@ -1770,6 +1782,7 @@
         done: done.length,
         failed: failed.length,
         expectedCount,
+        taskList: taskResult.meta,
         matchedTasks: matched.map((task) => summarizeOfflineTask(task)),
       });
       notify('等待 115 离线任务完成', statusText);
@@ -1800,18 +1813,103 @@
 
   async function listOfflineTasks() {
     try {
-      return await listOfflineTasksByMethod('POST');
+      const json = await fetchOfflineTaskPageByMethod('POST', 1);
+      return extractOfflineTasks(json);
     } catch (error) {
       console.warn('[Send to 115] POST 获取离线任务列表失败，尝试 GET', error);
-      return listOfflineTasksByMethod('GET');
+      const json = await fetchOfflineTaskPageByMethod('GET', 1);
+      return extractOfflineTasks(json);
     }
   }
 
-  async function listOfflineTasksByMethod(method) {
+  async function listOfflineTasksForMatcher(matcher, job, expectedCount, settings) {
+    try {
+      return await listOfflineTasksForMatcherByMethod('POST', matcher, job, expectedCount, settings);
+    } catch (error) {
+      console.warn('[Send to 115] POST 分页获取离线任务列表失败，尝试 GET', error);
+      return listOfflineTasksForMatcherByMethod('GET', matcher, job, expectedCount, settings);
+    }
+  }
+
+  async function listOfflineTasksForMatcherByMethod(method, matcher, job, expectedCount, settings) {
+    const maxPages = clampNumber(settings.maxTaskListPages, 1, 100, DEFAULT_SETTINGS.maxTaskListPages);
+    const targetCount = Math.max(1, Number(expectedCount || 1));
     const token = await getSignToken();
     const userId = token.userId || await getOptionalUserId();
+    const auth = { ...token, userId };
+    const allTasks = [];
+    const pages = [];
+    let pageCount = 1;
+    let totalCount = 0;
+    let stopReason = 'max_pages';
+
+    for (let page = 1; page <= maxPages && page <= pageCount; page += 1) {
+      const json = await fetchOfflineTaskPageByMethod(method, page, auth);
+      pageCount = clampNumber(json.page_count, 1, 100000, pageCount);
+      totalCount = Number(json.count || totalCount || 0);
+
+      const pageTasks = extractOfflineTasks(json);
+      allTasks.push(...pageTasks);
+
+      const pageMatched = pageTasks.filter((task) => matchOfflineTask(task, matcher, job));
+      const pageDone = pageMatched.filter(isOfflineTaskDone);
+      const pageFailed = pageMatched.filter(isOfflineTaskFailed);
+      const pagePending = pageMatched.filter((task) => !isOfflineTaskDone(task) && !isOfflineTaskFailed(task));
+      const uniqueTasks = dedupeObjects(allTasks);
+      const matched = uniqueTasks.filter((task) => matchOfflineTask(task, matcher, job));
+      const done = matched.filter(isOfflineTaskDone);
+      const failed = matched.filter(isOfflineTaskFailed);
+      const pending = matched.filter((task) => !isOfflineTaskDone(task) && !isOfflineTaskFailed(task));
+
+      pages.push({
+        page,
+        pageTasks: pageTasks.length,
+        matched: pageMatched.length,
+        done: pageDone.length,
+        pending: pagePending.length,
+        failed: pageFailed.length,
+        totalMatched: matched.length,
+        totalDone: done.length,
+      });
+
+      if (failed.length) {
+        stopReason = page === 1 ? 'page1_failed' : 'failed';
+        break;
+      }
+      if (page === 1 && pending.length) {
+        stopReason = 'page1_pending';
+        break;
+      }
+      if (done.length >= targetCount && matched.length >= targetCount) {
+        stopReason = 'done_enough';
+        break;
+      }
+      if (page >= pageCount) {
+        stopReason = 'all_pages';
+        break;
+      }
+    }
+
+    const tasks = dedupeObjects(allTasks);
+    return {
+      tasks,
+      meta: {
+        method,
+        maxPages,
+        pagesFetched: pages.length,
+        pageCount,
+        totalCount,
+        stopReason,
+        pages,
+      },
+    };
+  }
+
+  async function fetchOfflineTaskPageByMethod(method, page, auth) {
+    const token = auth || await getSignToken();
+    const userId = token.userId || await getOptionalUserId();
     const params = new URLSearchParams();
-    params.set('page', '1');
+    params.set('page', String(page || 1));
     params.set('uid', userId || '');
     params.set('sign', token.sign);
     params.set('time', token.time);
@@ -1833,7 +1931,7 @@
     if (json.state === false) {
       throw new Error(json.error_msg || json.msg || '获取 115 离线任务列表失败');
     }
-    return extractOfflineTasks(json);
+    return json;
   }
 
   function extractOfflineTasks(value) {
@@ -3477,7 +3575,7 @@
     return parseJson(trimmed);
   }
 
-  function makeRandomFolderName(prefix) {
+  function makeRandomFolderName(prefix, label) {
     const now = new Date();
     const datePart = [
       now.getFullYear(),
@@ -3490,7 +3588,13 @@
       String(now.getSeconds()).padStart(2, '0'),
     ].join('');
     const randomPart = Math.random().toString(16).slice(2, 8);
-    return `${prefix}-${datePart}-${timePart}-${randomPart}`;
+    const labelPart = String(label || '')
+      .split('/')
+      .map((part) => sanitizeAria2PathSegment(part))
+      .filter(Boolean)
+      .join('-')
+      .slice(0, 80);
+    return [prefix, labelPart, datePart, timePart, randomPart].filter(Boolean).join('-');
   }
 
   function sleep(ms) {
