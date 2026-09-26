@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.8.28
+// @version      0.8.29
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -30,7 +30,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.8.28';
+  const SCRIPT_VERSION = '0.8.29';
 
   const CONFIG = {
     settingsKey: 'send_to_115_settings',
@@ -389,7 +389,7 @@
 
     if (event.shiftKey || !menuUrls.length) return;
     event.preventDefault();
-    showContextMenu(event.clientX, event.clientY, menuUrls);
+    showContextMenu(event.clientX, event.clientY, menuUrls, getContextMenuNativeFallbackContext(event));
   }, true);
 
   document.addEventListener('click', hideContextMenu);
@@ -412,6 +412,15 @@
       linkHref,
       linkText,
     ].filter(Boolean).join('\n'));
+  }
+
+  function getContextMenuNativeFallbackContext(event) {
+    return {
+      text: getSelectionText(),
+      linkHref: getLinkHref(event.target),
+      linkText: getLinkText(event.target),
+      pageUrl: location.href,
+    };
   }
 
   function collectCurrentUrls() {
@@ -441,25 +450,45 @@
 
   function installMangaContextMenuBridge() {
     const actionId = 'send-to-115-offline';
+    const copyActionId = 'send-to-115-copy';
+    const openActionId = 'send-to-115-open-link';
     const register = () => {
-      window.dispatchEvent(new CustomEvent('mit-context-menu-register', {
-        detail: {
-          id: actionId,
-          label: '发送到 115',
-          title: '发送选中的 magnet/ed2k/http 链接到 115 离线下载',
-          match: 'downloadLinks',
-          priority: 100,
-          source: 'send-to-115',
-          version: SCRIPT_VERSION,
-        },
-      }));
+      registerMangaContextMenuAction({
+        id: actionId,
+        label: '发送到 115',
+        title: '发送选中的 magnet/ed2k/http 链接到 115 离线下载',
+        match: 'downloadLinks',
+        priority: 100,
+      });
+      registerMangaContextMenuAction({
+        id: copyActionId,
+        label: '复制',
+        title: '复制选中文本或链接地址',
+        match: 'copyable',
+        priority: -1000,
+      });
+      registerMangaContextMenuAction({
+        id: openActionId,
+        label: '新标签页打开',
+        title: '在新标签页打开链接',
+        match: 'link',
+        priority: -1001,
+      });
     };
 
     window.addEventListener('mit-context-menu-ready', register);
     window.addEventListener('mit-context-menu-action', (event) => {
       const detail = event.detail || {};
-      if (detail.id !== actionId) return;
       const context = detail.context || {};
+      if (detail.id === copyActionId) {
+        copyContextValue(context);
+        return;
+      }
+      if (detail.id === openActionId) {
+        openContextLink(context);
+        return;
+      }
+      if (detail.id !== actionId) return;
       const urls = extractLinks([
         context.text,
         context.linkHref,
@@ -476,6 +505,16 @@
     });
     register();
     window.setTimeout(register, 1000);
+  }
+
+  function registerMangaContextMenuAction(detail) {
+    window.dispatchEvent(new CustomEvent('mit-context-menu-register', {
+      detail: {
+        ...detail,
+        source: 'send-to-115',
+        version: SCRIPT_VERSION,
+      },
+    }));
   }
 
   function installMikanButtons() {
@@ -790,7 +829,7 @@
     return link ? link.textContent.trim() : '';
   }
 
-  function showContextMenu(x, y, urls) {
+  function showContextMenu(x, y, urls, context = {}) {
     hideContextMenu();
 
     const menu = document.createElement('div');
@@ -798,6 +837,13 @@
     appendContextMenuButton(menu, '发送并推 aria2', () => sendUrls(urls, { pushToAria2: true }));
     appendContextMenuButton(menu, '按配置发送到 115', () => sendUrls(urls));
     appendContextMenuButton(menu, '仅提交 115', () => sendUrls(urls, { pushToAria2: false }));
+    const copyValue = getCopyContextValue(context);
+    if (copyValue || context.linkHref) {
+      appendContextMenuButton(menu, '复制', () => copyText(copyValue || context.linkHref));
+    }
+    if (context.linkHref) {
+      appendContextMenuButton(menu, '新标签页打开', () => openUrlInNewTab(context.linkHref));
+    }
 
     const hint = document.createElement('small');
     hint.textContent = `${urls.length} 条链接 · Shift+右键原菜单`;
@@ -819,6 +865,64 @@
       onClick();
     });
     parent.appendChild(button);
+  }
+
+  function copyContextValue(context) {
+    const value = getCopyContextValue(context);
+    if (!value) {
+      notify('复制失败', '没有可复制的文本或链接');
+      return;
+    }
+    copyText(value);
+  }
+
+  function getCopyContextValue(context = {}) {
+    return String(context.text || '').trim()
+      || String(context.linkHref || '').trim()
+      || String(context.linkText || '').trim();
+  }
+
+  async function copyText(text) {
+    const value = String(text || '').trim();
+    if (!value) return;
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(value);
+      } else {
+        copyTextFallback(value);
+      }
+      notify('已复制', value.slice(0, 80));
+    } catch (error) {
+      copyTextFallback(value);
+      notify('已复制', value.slice(0, 80));
+    }
+  }
+
+  function copyTextFallback(text) {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.left = '-9999px';
+    textarea.style.top = '-9999px';
+    document.documentElement.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    document.execCommand('copy');
+    textarea.remove();
+  }
+
+  function openContextLink(context) {
+    if (!context || !context.linkHref) {
+      notify('打开失败', '没有可打开的链接');
+      return;
+    }
+    openUrlInNewTab(context.linkHref);
+  }
+
+  function openUrlInNewTab(url) {
+    const value = String(url || '').trim();
+    if (!value) return;
+    window.open(value, '_blank', 'noopener,noreferrer');
   }
 
   function hideContextMenu() {
