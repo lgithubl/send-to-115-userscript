@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.8.30
+// @version      0.8.31
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -30,7 +30,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.8.30';
+  const SCRIPT_VERSION = '0.8.31';
 
   const CONFIG = {
     settingsKey: 'send_to_115_settings',
@@ -1217,63 +1217,66 @@
       return;
     }
 
-    for (const item of history) {
-      const row = document.createElement('div');
-      row.className = 'send-to-115-history-item';
+    for (const item of history) container.appendChild(renderHistoryItem(item));
+  }
 
-      const meta = document.createElement('div');
-      meta.className = 'send-to-115-history-meta';
+  function renderHistoryItem(item) {
+    const row = document.createElement('div');
+    row.className = 'send-to-115-history-item';
+    row.dataset.sendTo115HistoryId = item.id;
 
-      const left = document.createElement('span');
-      left.textContent = `${formatTime(item.createdAt)} · ${item.urls.length} 条`;
-      left.title = left.textContent;
-      meta.appendChild(left);
+    const meta = document.createElement('div');
+    meta.className = 'send-to-115-history-meta';
 
-      const right = document.createElement('span');
-      right.textContent = item.folderPath || item.folderName || item.wpPathId || '';
-      right.title = right.textContent;
-      meta.appendChild(right);
-      row.appendChild(meta);
+    const left = document.createElement('span');
+    left.textContent = `${formatTime(item.createdAt)} · ${item.urls.length} 条`;
+    left.title = left.textContent;
+    meta.appendChild(left);
 
-      const status = document.createElement('div');
-      status.className = `send-to-115-status ${getStatusClass(item.status)}`;
-      status.textContent = item.status || 'unknown';
-      status.title = [
-        item.status || 'unknown',
-        item.pushedCount ? `pushed ${item.pushedCount}` : '',
-        item.detail || '',
-        item.error || '',
-      ].filter(Boolean).join('\n');
-      row.appendChild(status);
+    const right = document.createElement('span');
+    right.textContent = item.folderPath || item.folderName || item.wpPathId || '';
+    right.title = right.textContent;
+    meta.appendChild(right);
+    row.appendChild(meta);
 
-      const url = document.createElement('div');
-      url.className = 'send-to-115-history-url';
-      url.textContent = item.urls[0] || '';
-      url.title = (item.urls || []).join('\n');
-      row.appendChild(url);
+    const status = document.createElement('div');
+    status.className = `send-to-115-status ${getStatusClass(item.status)}`;
+    status.textContent = item.status || 'unknown';
+    status.title = [
+      item.status || 'unknown',
+      item.pushedCount ? `pushed ${item.pushedCount}` : '',
+      item.detail || '',
+      item.error || '',
+    ].filter(Boolean).join('\n');
+    row.appendChild(status);
 
-      const logText = Array.isArray(item.log) ? item.log.join('\n') : '';
-      const detailText = item.error || item.detail || (Array.isArray(item.log) ? item.log[0] : '');
-      if (detailText || logText) {
-        const detail = document.createElement('div');
-        detail.className = 'send-to-115-history-detail';
-        detail.textContent = detailText;
-        detail.title = [item.error || item.detail || '', logText].filter(Boolean).join('\n\n');
-        row.appendChild(detail);
-      }
+    const url = document.createElement('div');
+    url.className = 'send-to-115-history-url';
+    url.textContent = item.urls[0] || '';
+    url.title = (item.urls || []).join('\n');
+    row.appendChild(url);
 
-      const controls = document.createElement('div');
-      controls.className = 'send-to-115-panel-row';
-      appendButton(controls, '刷新状态', () => refreshHistoryStatus(item.id));
-      appendButton(controls, '推 aria2', () => pushHistoryToAria2(item.id));
-      appendButton(controls, '重发', () => sendUrls(item.urls, item.overrides || {}));
-      appendButton(controls, '重发并推 aria2', () => sendUrls(item.urls, { ...(item.overrides || {}), pushToAria2: true }));
-      appendButton(controls, '仅提交 115', () => sendUrls(item.urls, { ...(item.overrides || {}), pushToAria2: false }));
-      appendButton(controls, '删除', () => deleteHistoryItem(item.id));
-      row.appendChild(controls);
-
-      container.appendChild(row);
+    const logText = Array.isArray(item.log) ? item.log.join('\n') : '';
+    const detailText = item.error || item.detail || (Array.isArray(item.log) ? item.log[0] : '');
+    if (detailText || logText) {
+      const detail = document.createElement('div');
+      detail.className = 'send-to-115-history-detail';
+      detail.textContent = detailText;
+      detail.title = [item.error || item.detail || '', logText].filter(Boolean).join('\n\n');
+      row.appendChild(detail);
     }
+
+    const controls = document.createElement('div');
+    controls.className = 'send-to-115-panel-row';
+    appendButton(controls, '刷新状态', () => refreshHistoryStatus(item.id));
+    appendButton(controls, '推 aria2', () => pushHistoryToAria2(item.id));
+    appendButton(controls, '重发', () => sendUrls(item.urls, item.overrides || {}));
+    appendButton(controls, '重发并推 aria2', () => sendUrls(item.urls, { ...(item.overrides || {}), pushToAria2: true }));
+    appendButton(controls, '仅提交 115', () => sendUrls(item.urls, { ...(item.overrides || {}), pushToAria2: false }));
+    appendButton(controls, '删除', () => deleteHistoryItem(item.id));
+    row.appendChild(controls);
+
+    return row;
   }
 
   function getStatusClass(status) {
@@ -1284,11 +1287,22 @@
 
   function getHistory() {
     const saved = GM_getValue(CONFIG.historyKey, []);
-    return Array.isArray(saved) ? saved : safeJsonParse(saved, []);
+    return normalizeHistory(Array.isArray(saved) ? saved : safeJsonParse(saved, []));
+  }
+
+  function normalizeHistory(history) {
+    return (Array.isArray(history) ? history : [])
+      .filter(Boolean)
+      .sort((left, right) => Number(left.createdAt || 0) - Number(right.createdAt || 0));
+  }
+
+  function trimHistory(history) {
+    const sorted = normalizeHistory(history);
+    return sorted.slice(Math.max(0, sorted.length - CONFIG.maxHistoryItems));
   }
 
   function setHistory(history) {
-    GM_setValue(CONFIG.historyKey, history.slice(0, CONFIG.maxHistoryItems));
+    GM_setValue(CONFIG.historyKey, trimHistory(history));
     if (!panelCollapsed) renderPanel();
   }
 
@@ -1330,6 +1344,35 @@
     return item.id;
   }
 
+  function syncHistoryItemInPanel(id) {
+    if (panelCollapsed) return;
+
+    const container = document.querySelector('.send-to-115-history');
+    if (!container) {
+      renderPanel();
+      return;
+    }
+
+    const item = getHistory().find((entry) => entry.id === id);
+    if (!item) {
+      renderPanel();
+      return;
+    }
+
+    const rows = Array.from(container.querySelectorAll('.send-to-115-history-item'));
+    const row = rows.find((entry) => entry.dataset.sendTo115HistoryId === id);
+    const nextRow = renderHistoryItem(item);
+    if (row) {
+      row.replaceWith(nextRow);
+      return;
+    }
+
+    for (const entry of rows) {
+      if (!entry.dataset.sendTo115HistoryId) entry.remove();
+    }
+    container.appendChild(nextRow);
+  }
+
   function upsertHistoryItem(itemOrPatch) {
     const history = getHistory();
     const index = history.findIndex((item) => item.id === itemOrPatch.id);
@@ -1340,14 +1383,18 @@
     };
 
     if (index === -1) {
-      history.unshift(nextItem);
+      history.push(nextItem);
     } else {
-      history.splice(index, 1);
-      history.unshift(nextItem);
+      history[index] = nextItem;
     }
 
-    GM_setValue(CONFIG.historyKey, history.slice(0, CONFIG.maxHistoryItems));
-    if (!panelCollapsed) renderPanel();
+    const nextHistory = trimHistory(history);
+    GM_setValue(CONFIG.historyKey, nextHistory);
+    if (history.length !== nextHistory.length) {
+      if (!panelCollapsed) renderPanel();
+      return;
+    }
+    syncHistoryItemInPanel(nextItem.id);
   }
 
   function appendHistoryLog(id, message, data) {
@@ -1358,9 +1405,9 @@
     const line = `[${formatTime(Date.now())}] ${message}${data ? ` ${safeStringify(data, 360)}` : ''}`;
     item.log = [line, ...(Array.isArray(item.log) ? item.log : [])].slice(0, 30);
     item.updatedAt = Date.now();
-    GM_setValue(CONFIG.historyKey, history);
+    GM_setValue(CONFIG.historyKey, trimHistory(history));
     console.info('[Send to 115]', message, data || '');
-    if (!panelCollapsed) renderPanel();
+    syncHistoryItemInPanel(id);
   }
 
   function logJson(label, value, maxLength = 12000) {
@@ -1575,7 +1622,7 @@
   }
 
   async function pushLatestHistoryToAria2() {
-    const item = getHistory().find((entry) => reviveJob(entry));
+    const item = getHistory().slice().reverse().find((entry) => reviveJob(entry));
     if (!item) {
       notify('没有可推送记录', '先发送或刷新一条记录');
       return;
