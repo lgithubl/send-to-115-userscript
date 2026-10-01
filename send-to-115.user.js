@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.8.33
+// @version      0.8.34
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -30,7 +30,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.8.33';
+  const SCRIPT_VERSION = '0.8.34';
 
   const CONFIG = {
     settingsKey: 'send_to_115_settings',
@@ -70,6 +70,7 @@
     useExtensionBridge: true,
     downurlCookieHeader: '',
     debugDownurlCurl: false,
+    enabledHosts: [],
   };
 
   const API = {
@@ -107,6 +108,12 @@
   };
 
   let panelCollapsed = Boolean(GM_getValue(CONFIG.panelCollapsedKey, true));
+
+  registerHostToggleMenu('Send to 115');
+  if (!isCurrentHostEnabled()) {
+    console.info(`[Send to 115] version ${SCRIPT_VERSION} disabled on ${location.hostname || location.href}`);
+    return;
+  }
 
   GM_addStyle(`
     .send-to-115-toast {
@@ -415,10 +422,16 @@
   }
 
   function getContextMenuNativeFallbackContext(event) {
+    const editableTarget = getEditableTarget(event.target);
     return {
-      text: getSelectionText(),
+      text: getSelectionText() || getEditableSelectionText(editableTarget),
       linkHref: getLinkHref(event.target),
       linkText: getLinkText(event.target),
+      editableTarget,
+      editableText: getEditableSelectionText(editableTarget),
+      editableRange: getEditableSelectionRange(editableTarget),
+      canCut: isCuttableEditable(editableTarget),
+      canPaste: isPasteableEditable(editableTarget),
       pageUrl: location.href,
     };
   }
@@ -451,6 +464,8 @@
   function installMangaContextMenuBridge() {
     const actionId = 'send-to-115-offline';
     const copyActionId = 'send-to-115-copy';
+    const cutActionId = 'send-to-115-cut';
+    const pasteActionId = 'send-to-115-paste';
     const openActionId = 'send-to-115-open-link';
     const register = () => {
       registerMangaContextMenuAction({
@@ -465,6 +480,20 @@
         label: '复制',
         title: '复制选中文本或链接地址',
         match: 'copyable',
+        priority: -999,
+      });
+      registerMangaContextMenuAction({
+        id: cutActionId,
+        label: '剪切',
+        title: '剪切可编辑区域中的选中文本',
+        match: 'cuttable',
+        priority: -998,
+      });
+      registerMangaContextMenuAction({
+        id: pasteActionId,
+        label: '粘贴',
+        title: '粘贴到可编辑区域',
+        match: 'pasteable',
         priority: -1000,
       });
       registerMangaContextMenuAction({
@@ -482,6 +511,14 @@
       const context = detail.context || {};
       if (detail.id === copyActionId) {
         copyContextValue(context);
+        return;
+      }
+      if (detail.id === cutActionId) {
+        cutContextValue(context);
+        return;
+      }
+      if (detail.id === pasteActionId) {
+        pasteContextValue(context);
         return;
       }
       if (detail.id === openActionId) {
@@ -819,6 +856,48 @@
     return String(window.getSelection ? window.getSelection() : '').trim();
   }
 
+  function getEditableTarget(target) {
+    const element = target && target.closest
+      ? target.closest('input, textarea, [contenteditable]')
+      : null;
+    if (!element) return null;
+    if (element.matches('input, textarea')) {
+      if (element.disabled || element.readOnly) return null;
+      return element;
+    }
+    return element.isContentEditable ? element : null;
+  }
+
+  function getEditableSelectionText(target) {
+    if (!target) return '';
+    if (target.matches && target.matches('input, textarea')) {
+      const start = Number(target.selectionStart || 0);
+      const end = Number(target.selectionEnd || 0);
+      if (end <= start) return '';
+      return String(target.value || '').slice(start, end);
+    }
+    const selection = window.getSelection && window.getSelection();
+    if (!selection || selection.rangeCount <= 0 || selection.isCollapsed) return '';
+    const range = selection.getRangeAt(0);
+    return target.contains(range.commonAncestorContainer) ? String(selection).trim() : '';
+  }
+
+  function getEditableSelectionRange(target) {
+    if (!target || (target.matches && target.matches('input, textarea'))) return null;
+    const selection = window.getSelection && window.getSelection();
+    if (!selection || selection.rangeCount <= 0) return null;
+    const range = selection.getRangeAt(0);
+    return target.contains(range.commonAncestorContainer) ? range.cloneRange() : null;
+  }
+
+  function isCuttableEditable(target) {
+    return Boolean(target && getEditableSelectionText(target));
+  }
+
+  function isPasteableEditable(target) {
+    return Boolean(target);
+  }
+
   function getLinkHref(target) {
     const link = target && target.closest ? target.closest('a[href]') : null;
     return link ? link.href : '';
@@ -837,9 +916,15 @@
     appendContextMenuButton(menu, '发送并推 aria2', () => sendUrls(urls, { pushToAria2: true }));
     appendContextMenuButton(menu, '按配置发送到 115', () => sendUrls(urls));
     appendContextMenuButton(menu, '仅提交 115', () => sendUrls(urls, { pushToAria2: false }));
+    if (isCuttableContext(context)) {
+      appendContextMenuButton(menu, '剪切', () => cutContextValue(context));
+    }
     const copyValue = getCopyContextValue(context);
     if (copyValue || context.linkHref) {
       appendContextMenuButton(menu, '复制', () => copyText(copyValue || context.linkHref));
+    }
+    if (isPasteableContext(context)) {
+      appendContextMenuButton(menu, '粘贴', () => pasteContextValue(context));
     }
     if (context.linkHref) {
       appendContextMenuButton(menu, '新标签页打开', () => openUrlInNewTab(context.linkHref));
@@ -878,11 +963,12 @@
 
   function getCopyContextValue(context = {}) {
     return String(context.text || '').trim()
+      || String(context.editableText || '').trim()
       || String(context.linkHref || '').trim()
       || String(context.linkText || '').trim();
   }
 
-  async function copyText(text) {
+  async function copyText(text, title = '已复制') {
     const value = String(text || '').trim();
     if (!value) return;
     try {
@@ -891,10 +977,10 @@
       } else {
         copyTextFallback(value);
       }
-      notify('已复制', value.slice(0, 80));
+      notify(title, value.slice(0, 80));
     } catch (error) {
       copyTextFallback(value);
-      notify('已复制', value.slice(0, 80));
+      notify(title, value.slice(0, 80));
     }
   }
 
@@ -909,6 +995,86 @@
     textarea.select();
     document.execCommand('copy');
     textarea.remove();
+  }
+
+  function isCuttableContext(context = {}) {
+    return Boolean(context.canCut || isCuttableEditable(context.editableTarget));
+  }
+
+  function isPasteableContext(context = {}) {
+    return Boolean(context.canPaste || isPasteableEditable(context.editableTarget));
+  }
+
+  async function cutContextValue(context = {}) {
+    const target = context.editableTarget;
+    const value = getEditableSelectionText(target) || String(context.editableText || context.text || '').trim();
+    if (!target || !value) {
+      notify('剪切失败', '没有可剪切的选中文本');
+      return;
+    }
+    await copyText(value, '已剪切');
+    deleteEditableSelection(target, context.editableRange);
+  }
+
+  async function pasteContextValue(context = {}) {
+    const target = context.editableTarget;
+    if (!target) {
+      notify('粘贴失败', '没有可粘贴的输入位置');
+      return;
+    }
+    let text = '';
+    try {
+      if (!navigator.clipboard || !navigator.clipboard.readText) {
+        throw new Error('浏览器不支持读取剪贴板');
+      }
+      text = await navigator.clipboard.readText();
+    } catch (error) {
+      notify('粘贴失败', '浏览器阻止读取剪贴板，请用原生菜单或 Ctrl+V');
+      return;
+    }
+    insertTextIntoEditable(target, text, context.editableRange);
+    notify('已粘贴', String(text || '').slice(0, 80));
+  }
+
+  function deleteEditableSelection(target, range) {
+    if (target.matches && target.matches('input, textarea')) {
+      target.focus();
+      target.setRangeText('', target.selectionStart || 0, target.selectionEnd || 0, 'start');
+      target.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteByCut' }));
+      return;
+    }
+    target.focus();
+    const selection = window.getSelection && window.getSelection();
+    if (selection && range) {
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+    if (selection && selection.rangeCount > 0) {
+      selection.deleteFromDocument();
+      target.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteByCut' }));
+    }
+  }
+
+  function insertTextIntoEditable(target, text, range) {
+    const value = String(text || '');
+    if (target.matches && target.matches('input, textarea')) {
+      target.focus();
+      target.setRangeText(value, target.selectionStart || 0, target.selectionEnd || 0, 'end');
+      target.dispatchEvent(new InputEvent('input', { bubbles: true, data: value, inputType: 'insertFromPaste' }));
+      return;
+    }
+    target.focus();
+    const selection = window.getSelection && window.getSelection();
+    if (selection && range) {
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+    if (!selection || selection.rangeCount <= 0) return;
+    selection.deleteFromDocument();
+    const node = document.createTextNode(value);
+    selection.getRangeAt(0).insertNode(node);
+    selection.collapse(node, node.length);
+    target.dispatchEvent(new InputEvent('input', { bubbles: true, data: value, inputType: 'insertFromPaste' }));
   }
 
   function openContextLink(context) {
@@ -928,6 +1094,63 @@
   function hideContextMenu() {
     const menu = document.querySelector('.send-to-115-context-menu');
     if (menu) menu.remove();
+  }
+
+  function registerHostToggleMenu(label) {
+    const host = getCurrentHost();
+    const enabled = isCurrentHostEnabled();
+    GM_registerMenuCommand(`${label}: ${enabled ? '禁用' : '启用'}当前域名 (${host || '当前页面'})`, () => {
+      setCurrentHostEnabled(!enabled);
+      window.alert(`${label} 已${enabled ? '禁用' : '启用'}当前域名，刷新页面后生效。`);
+      location.reload();
+    });
+    GM_registerMenuCommand(`${label}: 管理启用域名`, () => {
+      const settings = getSettings();
+      const current = settings.enabledHosts.join(', ');
+      const next = window.prompt('输入启用域名，逗号分隔；支持 *.example.com；留空表示不启用任何域名：', current);
+      if (next === null) return;
+      saveSettings({ enabledHosts: normalizeEnabledHosts(next.split(',')) });
+      window.alert(`${label} 启用域名已更新，刷新页面后生效。`);
+      location.reload();
+    });
+  }
+
+  function getCurrentHost() {
+    return String(location.hostname || '').toLowerCase();
+  }
+
+  function isCurrentHostEnabled() {
+    return isHostEnabled(getCurrentHost(), getSettings().enabledHosts);
+  }
+
+  function setCurrentHostEnabled(enabled) {
+    const host = getCurrentHost();
+    if (!host) return;
+    const settings = getSettings();
+    const hosts = settings.enabledHosts.filter((item) => item !== host);
+    if (enabled) hosts.push(host);
+    saveSettings({ enabledHosts: hosts });
+  }
+
+  function isHostEnabled(host, enabledHosts) {
+    const value = String(host || '').toLowerCase();
+    if (!value) return false;
+    return normalizeEnabledHosts(enabledHosts).some((item) => {
+      if (item === '*') return true;
+      if (item.startsWith('*.')) {
+        const domain = item.slice(2);
+        return value === domain || value.endsWith(`.${domain}`);
+      }
+      return value === item;
+    });
+  }
+
+  function normalizeEnabledHosts(value) {
+    const source = Array.isArray(value) ? value : String(value || '').split(',');
+    return Array.from(new Set(source
+      .map((item) => String(item || '').trim().toLowerCase())
+      .map((item) => item.replace(/^https?:\/\//, '').replace(/\/.*$/, ''))
+      .filter(Boolean)));
   }
 
   function getSettings() {
@@ -991,6 +1214,7 @@
       useExtensionBridge: settings.useExtensionBridge !== false,
       downurlCookieHeader: String(settings.downurlCookieHeader || '').trim(),
       debugDownurlCurl: Boolean(settings.debugDownurlCurl),
+      enabledHosts: normalizeEnabledHosts(settings.enabledHosts),
     };
   }
 
