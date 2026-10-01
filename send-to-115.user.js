@@ -1,20 +1,13 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.8.35
+// @version      0.8.36
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
 // @updateURL    https://raw.githubusercontent.com/lgithubl/send-to-115-userscript/main/send-to-115.user.js
 // @downloadURL  https://raw.githubusercontent.com/lgithubl/send-to-115-userscript/main/send-to-115.user.js
-// @match        http://mikanani.me/*
-// @match        https://mikanani.me/*
-// @match        http://*.mikanani.me/*
-// @match        https://*.mikanani.me/*
-// @match        http://115.com/*
-// @match        https://115.com/*
-// @match        http://*.115.com/*
-// @match        https://*.115.com/*
+// @match        *://*/*
 // @run-at       document-end
 // @noframes
 // @connect      115.com
@@ -37,7 +30,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.8.35';
+  const SCRIPT_VERSION = '0.8.36';
 
   const CONFIG = {
     settingsKey: 'send_to_115_settings',
@@ -48,6 +41,13 @@
     maxBatchSize: 50,
     maxHistoryItems: 20,
   };
+
+  const DEFAULT_ENABLED_HOSTS = [
+    'mikanani.me',
+    '*.mikanani.me',
+    '115.com',
+    '*.115.com',
+  ];
 
   const DEFAULT_SETTINGS = {
     wpPathId: '',
@@ -77,6 +77,7 @@
     useExtensionBridge: true,
     downurlCookieHeader: '',
     debugDownurlCurl: false,
+    enabledHosts: DEFAULT_ENABLED_HOSTS,
   };
 
   const API = {
@@ -114,6 +115,9 @@
   };
 
   let panelCollapsed = Boolean(GM_getValue(CONFIG.panelCollapsedKey, true));
+
+  registerHostToggleMenu('Send to 115');
+  if (!isCurrentHostEnabled()) return;
 
   GM_addStyle(`
     .send-to-115-toast {
@@ -1096,6 +1100,78 @@
     if (menu) menu.remove();
   }
 
+  function registerHostToggleMenu(label) {
+    const host = getCurrentHost();
+    const enabled = isCurrentHostEnabled();
+    GM_registerMenuCommand(`${label}: ${enabled ? '禁用' : '启用'}当前域名 (${host || '当前页面'})`, () => {
+      setCurrentHostEnabled(!enabled);
+      window.alert(`${label} 已${enabled ? '禁用' : '启用'}当前域名，刷新页面后生效。`);
+      location.reload();
+    });
+    GM_registerMenuCommand(`${label}: 管理启用域名`, () => {
+      const current = readEnabledHosts().join(', ');
+      const next = window.prompt('输入启用域名，逗号分隔；支持 *.example.com；留空表示不启用任何域名：', current);
+      if (next === null) return;
+      writeEnabledHosts(normalizeEnabledHosts(next.split(',')));
+      window.alert(`${label} 启用域名已更新，刷新页面后生效。`);
+      location.reload();
+    });
+  }
+
+  function getCurrentHost() {
+    return String(location.hostname || '').toLowerCase();
+  }
+
+  function isCurrentHostEnabled() {
+    return isHostEnabled(getCurrentHost(), readEnabledHosts());
+  }
+
+  function setCurrentHostEnabled(enabled) {
+    const host = getCurrentHost();
+    if (!host) return;
+    const hosts = readEnabledHosts().filter((item) => item !== host);
+    if (enabled) hosts.push(host);
+    writeEnabledHosts(hosts);
+  }
+
+  function readEnabledHosts() {
+    const saved = GM_getValue(CONFIG.settingsKey, {});
+    const parsed = typeof saved === 'string' ? safeJsonParse(saved, {}) : saved;
+    return normalizeEnabledHosts(parsed && Object.prototype.hasOwnProperty.call(parsed, 'enabledHosts')
+      ? parsed.enabledHosts
+      : DEFAULT_ENABLED_HOSTS);
+  }
+
+  function writeEnabledHosts(enabledHosts) {
+    const saved = GM_getValue(CONFIG.settingsKey, {});
+    const parsed = typeof saved === 'string' ? safeJsonParse(saved, {}) : saved;
+    GM_setValue(CONFIG.settingsKey, {
+      ...(parsed && typeof parsed === 'object' ? parsed : {}),
+      enabledHosts: normalizeEnabledHosts(enabledHosts),
+    });
+  }
+
+  function isHostEnabled(host, enabledHosts) {
+    const value = String(host || '').toLowerCase();
+    if (!value) return false;
+    return normalizeEnabledHosts(enabledHosts).some((item) => {
+      if (item === '*') return true;
+      if (item.startsWith('*.')) {
+        const domain = item.slice(2);
+        return value === domain || value.endsWith(`.${domain}`);
+      }
+      return value === item;
+    });
+  }
+
+  function normalizeEnabledHosts(value) {
+    const source = Array.isArray(value) ? value : String(value || '').split(',');
+    return Array.from(new Set(source
+      .map((item) => String(item || '').trim().toLowerCase())
+      .map((item) => item.replace(/^https?:\/\//, '').replace(/\/.*$/, ''))
+      .filter(Boolean)));
+  }
+
   function getSettings() {
     const saved = GM_getValue(CONFIG.settingsKey, {});
     const parsed = typeof saved === 'string' ? safeJsonParse(saved, {}) : saved;
@@ -1157,6 +1233,7 @@
       useExtensionBridge: settings.useExtensionBridge !== false,
       downurlCookieHeader: String(settings.downurlCookieHeader || '').trim(),
       debugDownurlCurl: Boolean(settings.debugDownurlCurl),
+      enabledHosts: normalizeEnabledHosts(settings.enabledHosts),
     };
   }
 
