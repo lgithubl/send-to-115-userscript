@@ -37,6 +37,7 @@
     oldWpPathIdKey: 'send_to_115_wp_path_id',
     historyKey: 'send_to_115_history',
     panelCollapsedKey: 'send_to_115_panel_collapsed',
+    panelBottomKey: 'send_to_115_panel_bottom',
     requestTimeout: 30000,
     maxBatchSize: 50,
     maxHistoryItems: 20,
@@ -115,6 +116,9 @@
   };
 
   let panelCollapsed = Boolean(GM_getValue(CONFIG.panelCollapsedKey, true));
+  const PANEL_EDGE_MARGIN = 8;
+  let panelBottom = Number(GM_getValue(CONFIG.panelBottomKey, NaN));
+  if (!Number.isFinite(panelBottom)) panelBottom = null;
 
   registerHostToggleMenu('Send to 115');
   if (!isCurrentHostEnabled()) return;
@@ -332,6 +336,11 @@
       padding: 9px 14px;
       font-weight: 700;
       box-shadow: 0 12px 32px rgba(15, 23, 42, .18);
+      touch-action: none;
+      cursor: grab;
+    }
+    .send-to-115-panel-collapsed button:active {
+      cursor: grabbing;
     }
     .send-to-115-mikan-button {
       margin-left: 6px;
@@ -1339,6 +1348,12 @@
     renderPanel();
   }
 
+  function clampPanelBottom(panel, value) {
+    const height = panel.offsetHeight || 48;
+    const maxBottom = Math.max(PANEL_EDGE_MARGIN, window.innerHeight - height - PANEL_EDGE_MARGIN);
+    return Math.min(Math.max(value, PANEL_EDGE_MARGIN), maxBottom);
+  }
+
   function renderPanel() {
     let panel = document.querySelector('.send-to-115-panel');
     if (!panel) {
@@ -1354,13 +1369,54 @@
       const openButton = document.createElement('button');
       openButton.type = 'button';
       openButton.textContent = '115';
-      openButton.title = '打开 Send to 115 面板';
+      openButton.title = '打开 Send to 115 面板(按住可上下拖动)';
+
+      let dragPointerId = null;
+      let dragStartY = 0;
+      let dragStartBottom = 0;
+      let dragged = false;
+
+      openButton.addEventListener('pointerdown', (event) => {
+        if (event.button !== 0 && event.pointerType === 'mouse') return;
+        dragPointerId = event.pointerId;
+        dragStartY = event.clientY;
+        dragStartBottom = window.innerHeight - panel.getBoundingClientRect().bottom;
+        dragged = false;
+        openButton.setPointerCapture(dragPointerId);
+      });
+
+      openButton.addEventListener('pointermove', (event) => {
+        if (dragPointerId === null || event.pointerId !== dragPointerId) return;
+        const deltaY = dragStartY - event.clientY;
+        if (Math.abs(deltaY) > 4) dragged = true;
+        panel.style.bottom = `${clampPanelBottom(panel, dragStartBottom + deltaY)}px`;
+      });
+
+      const endDrag = (event) => {
+        if (dragPointerId === null || event.pointerId !== dragPointerId) return;
+        if (openButton.hasPointerCapture(dragPointerId)) {
+          openButton.releasePointerCapture(dragPointerId);
+        }
+        if (dragged) {
+          panelBottom = clampPanelBottom(panel, window.innerHeight - panel.getBoundingClientRect().bottom);
+          GM_setValue(CONFIG.panelBottomKey, panelBottom);
+        }
+        dragPointerId = null;
+      };
+      openButton.addEventListener('pointerup', endDrag);
+      openButton.addEventListener('pointercancel', endDrag);
+
       openButton.addEventListener('click', () => {
+        if (dragged) {
+          dragged = false;
+          return;
+        }
         panelCollapsed = false;
         GM_setValue(CONFIG.panelCollapsedKey, panelCollapsed);
         renderPanel();
       });
       panel.appendChild(openButton);
+      panel.style.bottom = panelBottom === null ? '' : `${clampPanelBottom(panel, panelBottom)}px`;
       return;
     }
 
@@ -1443,6 +1499,7 @@
     body.appendChild(historySection);
 
     panel.appendChild(body);
+    panel.style.bottom = panelBottom === null ? '' : `${clampPanelBottom(panel, panelBottom)}px`;
   }
 
   function appendButton(parent, label, onClick) {
