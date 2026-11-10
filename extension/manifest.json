@@ -1,12 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Send to 115 Bridge",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Minimal companion bridge for Send to 115 userscript.",
   "permissions": [
     "cookies",
     "scripting",
-    "tabs"
+    "tabs",
+    "clipboardRead"
   ],
   "host_permissions": [
     "http://115.com/*",

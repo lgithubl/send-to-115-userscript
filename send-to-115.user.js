@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.8.38
+// @version      0.8.39
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -30,7 +30,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.8.38';
+  const SCRIPT_VERSION = '0.8.39';
 
   const CONFIG = {
     settingsKey: 'send_to_115_settings',
@@ -114,6 +114,8 @@
     urls: [],
     text: '',
   };
+  // 最近一次右键时的可编辑目标（元素 + 光标/选区）。菜单点击会让输入框失焦，桥接事件的 detail 里也带不过 DOM 元素，所以粘贴用这份
+  let lastEditable = null;
 
   let panelCollapsed = Boolean(GM_getValue(CONFIG.panelCollapsedKey, true));
   const PANEL_EDGE_MARGIN = 8;
@@ -400,6 +402,7 @@
   installMikanButtons();
 
   document.addEventListener('contextmenu', (event) => {
+    rememberEditable(event.target);
     const urls = collectEventUrls(event);
     const menuUrls = urls.filter(isContextMenuSendableUrl);
     lastContext = {
@@ -1029,24 +1032,110 @@
     deleteEditableSelection(target, context.editableRange);
   }
 
-  async function pasteContextValue(context = {}) {
-    const target = context.editableTarget;
+  function rememberEditable(eventTarget) {
+    const target = getEditableTarget(eventTarget);
     if (!target) {
+      lastEditable = null;
+      return;
+    }
+    const isField = Boolean(target.matches && target.matches('input, textarea'));
+    lastEditable = {
+      target,
+      start: isField ? Number(target.selectionStart || 0) : 0,
+      end: isField ? Number(target.selectionEnd || 0) : 0,
+      range: isField ? null : getEditableSelectionRange(target),
+      time: Date.now(),
+    };
+  }
+
+  function resolvePasteTarget(context) {
+    const saved = lastEditable && Date.now() - lastEditable.time < 5 * 60 * 1000 && lastEditable.target.isConnected ? lastEditable : null;
+    if (context.editableTarget && context.editableTarget.isConnected) {
+      return { target: context.editableTarget, range: context.editableRange || null, saved: saved && saved.target === context.editableTarget ? saved : null };
+    }
+    if (saved) return { target: saved.target, range: saved.range, saved };
+    const active = getEditableTarget(document.activeElement);
+    return active ? { target: active, range: null, saved: null } : null;
+  }
+
+  // 读剪贴板：安全上下文里用 navigator.clipboard；HTTP 页面（局域网 IP）里浏览器根本不提供这个接口，改走配套扩展（clipboardRead 权限，在扩展里 execCommand('paste')）
+  async function readClipboardText() {
+    let reason = '';
+    if (window.isSecureContext && navigator.clipboard && navigator.clipboard.readText) {
+      try {
+        return { text: await navigator.clipboard.readText(), source: 'clipboard-api' };
+      } catch (error) {
+        reason = error && error.name === 'NotAllowedError' ? 'denied' : 'error';
+      }
+    } else {
+      reason = 'insecure';
+    }
+    try {
+      const response = await sendExtensionBridgeRequest({ action: 'readClipboard' }, 2500, {
+        settleMs: 200,
+        prefer: (candidate) => Boolean(candidate && candidate.ok && typeof candidate.text === 'string'),
+      });
+      if (response && response.ok && typeof response.text === 'string') return { text: response.text, source: 'extension' };
+      if (response && response.error && /unknown|未知|不支持|unsupported/i.test(String(response.error))) return { text: null, reason: 'extension-old' };
+      if (response && response.error) return { text: null, reason: reason === 'denied' ? 'denied' : 'extension-failed', detail: String(response.error) };
+    } catch (error) {
+      // 没有装扩展 / 超时：保持前面的原因
+    }
+    return { text: null, reason: reason === 'denied' ? 'denied' : (reason === 'insecure' ? 'insecure-no-extension' : 'error') };
+  }
+
+  function pasteFailureMessage(result) {
+    switch (result && result.reason) {
+      case 'insecure-no-extension':
+        return '当前页面是 HTTP（非安全上下文），浏览器不允许脚本读取剪贴板。请安装/重载配套扩展 0.1.7+，或直接按 Ctrl+V；也可以给页面启用 HTTPS。';
+      case 'extension-old':
+        return '配套扩展版本太旧，请在 chrome://extensions 点 Reload 更新到 0.1.7+，然后刷新本页。';
+      case 'extension-failed':
+        return `扩展读取剪贴板失败：${result.detail || '未知错误'}。可以直接按 Ctrl+V。`;
+      case 'denied':
+        return '浏览器拒绝了剪贴板权限，请在地址栏的站点权限里允许后重试，或直接按 Ctrl+V。';
+      default:
+        return '读取剪贴板失败，请直接按 Ctrl+V。';
+    }
+  }
+
+  async function pasteContextValue(context = {}) {
+    const resolved = resolvePasteTarget(context);
+    if (!resolved) {
       notify('粘贴失败', '没有可粘贴的输入位置');
       return;
     }
-    let text = '';
-    try {
-      if (!navigator.clipboard || !navigator.clipboard.readText) {
-        throw new Error('浏览器不支持读取剪贴板');
-      }
-      text = await navigator.clipboard.readText();
-    } catch (error) {
-      notify('粘贴失败', '浏览器阻止读取剪贴板，请用原生菜单或 Ctrl+V');
+    const result = await readClipboardText();
+    if (typeof result.text !== 'string') {
+      restoreEditableFocus(resolved);
+      notify('粘贴失败', pasteFailureMessage(result));
       return;
     }
-    insertTextIntoEditable(target, text, context.editableRange);
-    notify('已粘贴', String(text || '').slice(0, 80));
+    if (!result.text) {
+      notify('粘贴失败', '剪贴板是空的');
+      return;
+    }
+    insertTextIntoEditable(resolved.target, result.text, resolved.range, resolved.saved);
+    notify('已粘贴', String(result.text).slice(0, 80));
+  }
+
+  // 粘贴失败时把焦点和光标还给输入框，用户可以直接 Ctrl+V
+  function restoreEditableFocus(resolved) {
+    const { target, range, saved } = resolved;
+    try {
+      target.focus();
+      if (target.matches && target.matches('input, textarea')) {
+        if (saved) target.setSelectionRange(saved.start, saved.end);
+      } else if (range) {
+        const selection = window.getSelection && window.getSelection();
+        if (selection) {
+          selection.removeAllRanges();
+          selection.addRange(range);
+        }
+      }
+    } catch (error) {
+      // 忽略：有些 input 类型不支持 setSelectionRange
+    }
   }
 
   function deleteEditableSelection(target, range) {
@@ -1068,20 +1157,40 @@
     }
   }
 
-  function insertTextIntoEditable(target, text, range) {
+  function insertTextIntoEditable(target, text, range, saved) {
     const value = String(text || '');
-    if (target.matches && target.matches('input, textarea')) {
-      target.focus();
+    const isField = Boolean(target.matches && target.matches('input, textarea'));
+    target.focus();
+    if (isField) {
+      try {
+        if (saved) target.setSelectionRange(saved.start, saved.end);
+      } catch (error) {
+        // 忽略：有些 input 类型不支持 setSelectionRange
+      }
+      // 优先走 execCommand：和真实粘贴一样会进撤销栈、触发 Vue / React 的 input 监听
+      let done = false;
+      try {
+        done = document.execCommand('insertText', false, value);
+      } catch (error) {
+        done = false;
+      }
+      if (done) return;
       target.setRangeText(value, target.selectionStart || 0, target.selectionEnd || 0, 'end');
       target.dispatchEvent(new InputEvent('input', { bubbles: true, data: value, inputType: 'insertFromPaste' }));
       return;
     }
-    target.focus();
     const selection = window.getSelection && window.getSelection();
     if (selection && range) {
       selection.removeAllRanges();
       selection.addRange(range);
     }
+    let done = false;
+    try {
+      done = document.execCommand('insertText', false, value);
+    } catch (error) {
+      done = false;
+    }
+    if (done) return;
     if (!selection || selection.rangeCount <= 0) return;
     selection.deleteFromDocument();
     const node = document.createTextNode(value);

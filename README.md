@@ -57,6 +57,16 @@ When updating the extension, Chrome does not always replace the old background w
 
 Pure userscripts cannot add a top-level item directly into Chrome's native context menu. This script records the right-clicked content without replacing the native menu, then exposes the send action through Tampermonkey's userscript menu.
 
+## Paste on HTTP pages (LAN IP)
+
+The script menu's `粘贴` needs to read the clipboard. Browsers only expose `navigator.clipboard` on secure contexts (HTTPS, `localhost`, `127.0.0.1`), so on pages such as `http://192.168.x.x:port` the userscript cannot read it by itself. Since 0.8.39 the paste action falls back like this:
+
+1. `navigator.clipboard.readText()` (secure contexts; the browser may ask for permission once).
+2. The companion extension (0.1.7+, `clipboardRead` permission) reads the clipboard in the page via `document.execCommand('paste')` and returns it to the userscript through the existing bridge. After updating, click `Reload` on `Send to 115 Bridge` in `chrome://extensions` and refresh the page.
+3. If neither works, the focus and caret are given back to the input and the toast explains why (HTTP page / extension too old / permission denied); `Ctrl+V` always works.
+
+The paste target is remembered at right-click time (element + caret/selection), so it also works when the menu action arrives through the `mit-context-menu-*` bridge, where DOM elements cannot cross the userscript sandbox.
+
 ## Configuration
 
 Use the floating panel or the Tampermonkey menu command `设置 115 + aria2 配置` to edit JSON settings. `发送到 115（按配置）` follows `pushToAria2`; `仅提交到 115 离线` and `发送到 115，完成后推送 aria2` override it for one run.
