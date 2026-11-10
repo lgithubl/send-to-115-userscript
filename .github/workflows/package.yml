@@ -6,6 +6,9 @@ on:
       - main
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   package:
     runs-on: ubuntu-latest
@@ -26,6 +29,26 @@ jobs:
           mkdir -p dist/send-to-115-extension
           cp extension/manifest.json extension/background.js extension/content.js dist/send-to-115-extension/
           cp send-to-115.user.js dist/
+
+      - name: Zip extension
+        run: |
+          VERSION=$(node -p "require('./extension/manifest.json').version")
+          (cd dist/send-to-115-extension && zip -qr ../send-to-115-extension.zip .)
+          cp dist/send-to-115-extension.zip "dist/send-to-115-extension-${VERSION}.zip"
+          echo "EXT_VERSION=${VERSION}" >> "$GITHUB_ENV"
+
+      - name: Publish latest release (direct download, no login)
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --cleanup-tag --yes || true
+          gh release create latest \
+            dist/send-to-115-extension.zip \
+            dist/send-to-115.user.js \
+            --target "${GITHUB_SHA}" \
+            --title "Latest build (extension ${EXT_VERSION})" \
+            --notes "Auto-built from ${GITHUB_SHA}. Extension: unzip and Load unpacked / Reload in chrome://extensions. Userscript: open send-to-115.user.js with Tampermonkey."
 
       - name: Upload extension
         uses: actions/upload-artifact@v4
