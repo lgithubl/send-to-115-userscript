@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Send to 115 Offline
 // @namespace    https://github.com/lgithubl/send-to-115-userscript
-// @version      0.8.39
+// @version      0.8.40
 // @description  Send selected cloud links to 115 offline download without replacing the native context menu.
 // @author       lgithubl
 // @license      MIT
@@ -30,7 +30,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.8.39';
+  const SCRIPT_VERSION = '0.8.40';
 
   const CONFIG = {
     settingsKey: 'send_to_115_settings',
@@ -150,16 +150,56 @@
       color: #d1d5db;
       overflow-wrap: anywhere;
     }
+    .send-to-115-context-menu,
+    .send-to-115-panel {
+      --s115-bg: #fff;
+      --s115-bg-subtle: #f9fafb;
+      --s115-bg-hover: #f3f4f6;
+      --s115-fg: #111827;
+      --s115-fg-muted: #6b7280;
+      --s115-fg-title: #374151;
+      --s115-border: rgba(17, 24, 39, .16);
+      --s115-divider: #e5e7eb;
+      --s115-input-border: #d1d5db;
+      --s115-status-bg: #e0f2fe;
+      --s115-status-fg: #075985;
+      --s115-failed-bg: #fee2e2;
+      --s115-failed-fg: #991b1b;
+      --s115-pushed-bg: #dcfce7;
+      --s115-pushed-fg: #166534;
+      color-scheme: light;
+    }
+    @media (prefers-color-scheme: dark) {
+      .send-to-115-context-menu,
+      .send-to-115-panel {
+        --s115-bg: #1f2937;
+        --s115-bg-subtle: #111827;
+        --s115-bg-hover: #374151;
+        --s115-fg: #f3f4f6;
+        --s115-fg-muted: #9ca3af;
+        --s115-fg-title: #d1d5db;
+        --s115-border: rgba(255, 255, 255, .16);
+        --s115-divider: #374151;
+        --s115-input-border: #4b5563;
+        --s115-status-bg: #0c4a6e;
+        --s115-status-fg: #bae6fd;
+        --s115-failed-bg: #7f1d1d;
+        --s115-failed-fg: #fecaca;
+        --s115-pushed-bg: #14532d;
+        --s115-pushed-fg: #bbf7d0;
+        color-scheme: dark;
+      }
+    }
     .send-to-115-context-menu {
       position: fixed;
       z-index: 2147483647;
       min-width: 168px;
       padding: 6px;
-      border: 1px solid rgba(17, 24, 39, .16);
+      border: 1px solid var(--s115-border);
       border-radius: 8px;
-      background: #fff;
+      background: var(--s115-bg);
       box-shadow: 0 14px 34px rgba(15, 23, 42, .22);
-      color: #111827;
+      color: var(--s115-fg);
       font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
     .send-to-115-context-menu button {
@@ -175,12 +215,12 @@
       font: inherit;
     }
     .send-to-115-context-menu button:hover {
-      background: #f3f4f6;
+      background: var(--s115-bg-hover);
     }
     .send-to-115-context-menu small {
       display: block;
       padding: 4px 9px 6px;
-      color: #6b7280;
+      color: var(--s115-fg-muted);
     }
     .send-to-115-panel {
       position: fixed;
@@ -189,11 +229,11 @@
       z-index: 2147483646;
       width: min(380px, calc(100vw - 32px));
       max-height: min(720px, calc(100vh - 104px));
-      border: 1px solid rgba(17, 24, 39, .16);
+      border: 1px solid var(--s115-border);
       border-radius: 8px;
-      background: #fff;
+      background: var(--s115-bg);
       box-shadow: 0 18px 48px rgba(15, 23, 42, .22);
-      color: #111827;
+      color: var(--s115-fg);
       font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       overflow: hidden;
     }
@@ -202,17 +242,17 @@
       font: inherit;
     }
     .send-to-115-panel button {
-      border: 1px solid rgba(17, 24, 39, .16);
+      border: 1px solid var(--s115-border);
       border-radius: 5px;
-      background: #fff;
-      color: #111827;
+      background: var(--s115-bg);
+      color: var(--s115-fg);
       cursor: pointer;
       padding: 3px 6px;
       font-size: 11px;
       line-height: 1.25;
     }
     .send-to-115-panel button:hover {
-      background: #f3f4f6;
+      background: var(--s115-bg-hover);
     }
     .send-to-115-panel-header {
       display: flex;
@@ -220,8 +260,8 @@
       justify-content: space-between;
       gap: 10px;
       padding: 10px 12px;
-      border-bottom: 1px solid #e5e7eb;
-      background: #f9fafb;
+      border-bottom: 1px solid var(--s115-divider);
+      background: var(--s115-bg-subtle);
     }
     .send-to-115-panel-title {
       font-weight: 700;
@@ -249,17 +289,17 @@
     .send-to-115-section-title {
       margin: 0 0 8px;
       font-weight: 700;
-      color: #374151;
+      color: var(--s115-fg-title);
     }
     .send-to-115-settings-textarea {
       box-sizing: border-box;
       width: 100%;
       min-height: 220px;
       resize: vertical;
-      border: 1px solid #d1d5db;
+      border: 1px solid var(--s115-input-border);
       border-radius: 8px;
-      color: #111827;
-      background: #fff;
+      color: var(--s115-fg);
+      background: var(--s115-bg);
       padding: 10px;
       font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       tab-size: 2;
@@ -269,16 +309,16 @@
       gap: 8px;
     }
     .send-to-115-history-item {
-      border: 1px solid #e5e7eb;
+      border: 1px solid var(--s115-divider);
       border-radius: 8px;
       padding: 7px;
-      background: #fff;
+      background: var(--s115-bg);
     }
     .send-to-115-history-meta {
       display: flex;
       justify-content: space-between;
       gap: 8px;
-      color: #6b7280;
+      color: var(--s115-fg-muted);
       font-size: 12px;
       margin-bottom: 6px;
     }
@@ -296,8 +336,8 @@
       margin: 0 0 6px;
       padding: 3px 7px;
       border-radius: 999px;
-      background: #e0f2fe;
-      color: #075985;
+      background: var(--s115-status-bg);
+      color: var(--s115-status-fg);
       font-weight: 700;
       font-size: 12px;
       overflow: hidden;
@@ -305,22 +345,22 @@
       white-space: nowrap;
     }
     .send-to-115-status-failed {
-      background: #fee2e2;
-      color: #991b1b;
+      background: var(--s115-failed-bg);
+      color: var(--s115-failed-fg);
     }
     .send-to-115-status-pushed {
-      background: #dcfce7;
-      color: #166534;
+      background: var(--s115-pushed-bg);
+      color: var(--s115-pushed-fg);
     }
     .send-to-115-history-url {
-      color: #111827;
+      color: var(--s115-fg);
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
       margin-bottom: 8px;
     }
     .send-to-115-history-detail {
-      color: #6b7280;
+      color: var(--s115-fg-muted);
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -1239,8 +1279,13 @@
     const overlay = document.createElement('div');
     overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(15,23,42,.38);display:grid;place-items:center;padding:18px;';
 
+    const dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const theme = dark
+      ? { bg: '#1f2937', fg: '#f3f4f6', muted: '#9ca3af', border: 'rgba(255,255,255,.16)', inputBorder: '#4b5563', inputBg: '#111827', scheme: 'dark' }
+      : { bg: '#fff', fg: '#111827', muted: '#6b7280', border: 'rgba(0,0,0,.16)', inputBorder: '#d1d5db', inputBg: '#fff', scheme: 'light' };
+
     const dialog = document.createElement('div');
-    dialog.style.cssText = 'width:min(720px,calc(100vw - 36px));background:#fff;color:#111827;border:1px solid rgba(0,0,0,.16);border-radius:10px;box-shadow:0 24px 80px rgba(0,0,0,.28);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;';
+    dialog.style.cssText = `width:min(720px,calc(100vw - 36px));color-scheme:${theme.scheme};background:${theme.bg};color:${theme.fg};border:1px solid ${theme.border};border-radius:10px;box-shadow:0 24px 80px rgba(0,0,0,.28);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;`;
 
     const title = document.createElement('div');
     title.textContent = `${label} 启用域名`;
@@ -1248,12 +1293,12 @@
 
     const hint = document.createElement('div');
     hint.textContent = '每行一个域名，支持 *.example.com；留空表示不启用任何域名。';
-    hint.style.cssText = 'padding:0 16px 10px;color:#6b7280;font-size:12px;';
+    hint.style.cssText = `padding:0 16px 10px;color:${theme.muted};font-size:12px;`;
 
     const textarea = document.createElement('textarea');
     textarea.value = normalizeEnabledHosts(hosts).join('\n');
     textarea.spellcheck = false;
-    textarea.style.cssText = 'display:block;width:calc(100% - 32px);height:min(46vh,360px);margin:0 16px;padding:10px;border:1px solid #d1d5db;border-radius:8px;box-sizing:border-box;font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;resize:vertical;';
+    textarea.style.cssText = `display:block;width:calc(100% - 32px);height:min(46vh,360px);margin:0 16px;padding:10px;border:1px solid ${theme.inputBorder};background:${theme.inputBg};color:${theme.fg};border-radius:8px;box-sizing:border-box;font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;resize:vertical;`;
 
     const actions = document.createElement('div');
     actions.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;padding:12px 16px 16px;';
@@ -1267,7 +1312,7 @@
     save.textContent = '保存';
 
     [cancel, save].forEach((button) => {
-      button.style.cssText = 'padding:7px 12px;border:1px solid #d1d5db;border-radius:7px;background:#fff;color:#111827;cursor:pointer;';
+      button.style.cssText = `padding:7px 12px;border:1px solid ${theme.inputBorder};border-radius:7px;background:${theme.bg};color:${theme.fg};cursor:pointer;`;
     });
     save.style.background = '#2563eb';
     save.style.borderColor = '#2563eb';
