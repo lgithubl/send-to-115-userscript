@@ -89,6 +89,7 @@ Use the floating panel or the Tampermonkey menu command `设置 115 + aria2 配�
   "stableRounds": 2,
   "includeSubfolders": true,
   "waitOfflineTaskStatus": true,
+  "offlineDoneMinPercent": 100,
   "allowZeroSizeFiles": false,
   "useExtensionBridge": true,
   "debugDownurlCurl": false,
@@ -118,6 +119,7 @@ Example for your aria2 RPC endpoint:
   "stableRounds": 2,
   "includeSubfolders": true,
   "waitOfflineTaskStatus": true,
+  "offlineDoneMinPercent": 100,
   "allowZeroSizeFiles": false,
   "useExtensionBridge": true,
   "debugDownurlCurl": false,
@@ -178,3 +180,5 @@ If the extension is not installed or unavailable, the userscript falls back to n
 ## License
 
 MIT
+
+`offlineDoneMinPercent`：离线任务完成判定的最低进度，范围 1–100，默认 100。如果 115 已显示 `finished / 下载成功`，但进度停在 99，可将其改为 99。其他成功条件（包括文件 ID 和提取码）仍需满足。

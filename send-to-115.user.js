@@ -67,6 +67,7 @@
     aria2UserAgent: navigator.userAgent,
     fastPollIntervalsSec: [5, 10, 10, 10],
     maxTaskListPages: 10,
+    offlineDoneMinPercent: 100,
     pollIntervalMs: 30000,
     pollTimeoutMs: 7200000,
     stableRounds: 2,
@@ -1439,6 +1440,7 @@
       aria2MaxConnectionPerServer: clampNumber(settings.aria2MaxConnectionPerServer, 0, 64, DEFAULT_SETTINGS.aria2MaxConnectionPerServer),
       aria2UserAgent: String(settings.aria2UserAgent || navigator.userAgent).trim(),
       fastPollIntervalsSec: normalizeFastPollIntervalsSec(settings.fastPollIntervalsSec),
+      offlineDoneMinPercent: clampNumber(settings.offlineDoneMinPercent, 1, 100, DEFAULT_SETTINGS.offlineDoneMinPercent),
       maxTaskListPages: clampNumber(settings.maxTaskListPages, 1, 100, DEFAULT_SETTINGS.maxTaskListPages),
       pollIntervalMs: clampNumber(settings.pollIntervalMs, 5000, 600000, DEFAULT_SETTINGS.pollIntervalMs),
       pollTimeoutMs: clampNumber(settings.pollTimeoutMs, 60000, 86400000, DEFAULT_SETTINGS.pollTimeoutMs),
@@ -2718,7 +2720,7 @@
       && displayStatus === 'finished'
       && statusTextOk
       && Number.isFinite(percent)
-      && percent >= 100
+      && percent >= getSettings().offlineDoneMinPercent
       && Boolean(fileId)
       && Boolean(pickCode);
   }
